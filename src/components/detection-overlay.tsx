@@ -1,5 +1,5 @@
-import { useEffect, useRef, useCallback } from 'react';
 import { Detection } from '@/lib/types';
+import { useCallback, useEffect, useRef } from 'react';
 
 interface DetectionOverlayProps {
   detections: Detection[];

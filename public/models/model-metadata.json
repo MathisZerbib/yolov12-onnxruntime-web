@@ -85,7 +85,7 @@
     "hair drier",
     "toothbrush"
   ],
-  "confidenceThreshold": 0.5,
+  "confidenceThreshold": 0.7,
   "nmsThreshold": 0.4,
   "modelName": "YOLOv12 Nano (General Object Detection)",
   "version": "12.0.0",
