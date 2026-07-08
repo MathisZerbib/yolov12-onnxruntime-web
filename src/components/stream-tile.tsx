@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
+import { Loader2 } from 'lucide-react';
 import { Detection } from '@/lib/types';
+import { DetectionOverlay } from '@/components/detection-overlay';
 import { ObjectDetector } from '@/lib/object-detector';
 import { StreamConfig, TrafficCounter } from '@/lib/traffic-counter';
 import { Play, Square, AlertTriangle, Camera, Wifi, WifiOff, Eye, TestTube } from 'lucide-react';
@@ -37,6 +39,10 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
   const [lastDetectionCount, setLastDetectionCount] = useState(0);
   const [framesProcessed, setFramesProcessed] = useState(0);
   const [frameTestResult, setFrameTestResult] = useState<string | null>(null);
+  const [fps, setFps] = useState(0);
+  const [detections, setDetections] = useState<Detection[]>([]);
+  const fpsHistoryRef = useRef<number[]>([]);
+  const lastFpsUpdateRef = useRef(0);
 
   useEffect(() => {
     counterRef.current = new TrafficCounter();
@@ -172,6 +178,18 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
       if (now - lastFrameTimeRef.current > 250) {
         lastFrameTimeRef.current = now;
         
+        // Calculate FPS
+        const fpsHistory = fpsHistoryRef.current;
+        if (fpsHistory.length === 0 || now - lastFpsUpdateRef.current >= 1000) {
+          lastFpsUpdateRef.current = now;
+          if (fpsHistory.length > 0) {
+            const avgFps = Math.round(fpsHistory.reduce((a, b) => a + b, 0) / fpsHistory.length);
+            setFps(avgFps);
+          }
+          fpsHistoryRef.current = [];
+        }
+        fpsHistory.push(1);
+        
         try {
           const w = video.videoWidth || videoSize.width;
           const h = video.videoHeight || videoSize.height;
@@ -212,13 +230,14 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           detectionCountRef.current += detections.length;
           setFramesProcessed(frameCountRef.current);
           setLastDetectionCount(detections.length);
-          
+          setDetections(detections);
+
           console.log(`[StreamTile] ${config.name} frame=${frameCountRef.current} detections=${detections.length}`, detections.slice(0, 3));
-          
+
           const tracks = counterRef.current.update(detections, w, h);
           setCount(counterRef.current.getTotalCount());
-          
-          drawAnnotations(overlayCanvas, detections, tracks, w, h);
+
+          drawAnnotations(overlayCanvas, tracks, w, h);
         } catch (e) {
           console.error(`[StreamTile] ${config.name} detection loop error:`, e);
         }
@@ -288,7 +307,6 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
 
   const drawAnnotations = (
     canvas: HTMLCanvasElement,
-    detections: Detection[],
     tracks: any[],
     width: number,
     height: number
@@ -322,54 +340,7 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
     ctx.setLineDash([Math.max(5, width * 0.01), Math.max(3, width * 0.005)]);
     ctx.stroke();
     ctx.setLineDash([]);
-    
-    const vehicleOnly = detections.filter(d => 
-      config.vehicleClasses.some(vc => 
-        d.class.toLowerCase() === vc.toLowerCase() || 
-        d.class.toLowerCase().includes(vc.toLowerCase())
-      )
-    );
-    
-    const colorMap: Record<string, string> = {
-      'car': '#3B82F6',
-      'motorcycle': '#EF4444',
-      'bus': '#10B981',
-      'truck': '#F59E0B',
-      'bicycle': '#EC4899',
-    };
-    
-    vehicleOnly.forEach((det, idx) => {
-      const color = colorMap[det.class.toLowerCase()] || `hsl(${idx * 137 % 360}, 70%, 55%)`;
-      const x = det.x;
-      const y = det.y;
-      const w = det.width;
-      const h = det.height;
-      const confidence = (det.confidence * 100).toFixed(1);
-      
-      ctx.strokeStyle = color;
-      ctx.lineWidth = Math.max(2, width * 0.0025);
-      ctx.strokeRect(x, y, w, h);
-      
-      const fontSize = Math.max(11, width * 0.022);
-      ctx.font = `bold ${fontSize}px Arial, sans-serif`;
-      const label = `${det.class} ${confidence}%`;
-      const metrics = ctx.measureText(label);
-      const padding = fontSize * 0.35;
-      const boxHeight = fontSize + padding * 2;
-      
-      if (y > boxHeight + 4) {
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y - boxHeight, metrics.width + padding * 2, boxHeight);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(label, x + padding, y - boxHeight + padding);
-      } else {
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, metrics.width + padding * 2, boxHeight);
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillText(label, x + padding, y + padding);
-      }
-    });
-    
+
     tracks.forEach(track => {
       const cx = track.cx;
       const cy = track.cy;
@@ -463,16 +434,26 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           }}
         />
         
-        {/* Hidden canvases: frame capture + overlay */}
+        {/* Hidden canvas: frame capture */}
         <canvas
           ref={frameCanvasRef}
           className="hidden"
           aria-hidden="true"
         />
+        {/* Traffic ROI / counting line / tracks */}
         <canvas
           ref={overlayCanvasRef}
-          className="absolute inset-0 w-full h-full pointer-events-none"
+          className="absolute inset-0 w-full h-full object-contain pointer-events-none"
         />
+        {/* Detection bounding boxes, aligned with the (letterboxed) video */}
+        {isReady && detections.length > 0 && (
+          <DetectionOverlay
+            detections={detections}
+            videoWidth={videoSize.width}
+            videoHeight={videoSize.height}
+            className="absolute inset-0 object-contain"
+          />
+        )}
         
         <div className="absolute top-0 left-0 right-0 flex justify-between items-center z-10 bg-gradient-to-b from-black/70 to-transparent p-2">
           <div className="flex items-center gap-1.5">
@@ -483,9 +464,14 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           </div>
           <div className="flex items-center gap-2">
             {isPlaying && (
-              <span className="text-xs text-white/80 bg-black/50 px-1.5 py-0.5 rounded">
-                {framesProcessed}f {lastDetectionCount}det
-              </span>
+              <>
+                <span className="text-xs text-white/80 bg-black/50 px-1.5 py-0.5 rounded">
+                  {fps} FPS
+                </span>
+                <span className="text-xs text-white/80 bg-black/50 px-1.5 py-0.5 rounded">
+                  {framesProcessed}f {lastDetectionCount}det
+                </span>
+              </>
             )}
             <span className="bg-red-600/90 backdrop-blur-sm text-white text-xs font-bold px-2 py-0.5 rounded-md">
               COUNT: {count}
@@ -511,6 +497,13 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           </div>
         )}
         
+        {!isReady && !error && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-30 gap-3">
+            <Loader2 className="h-8 w-8 text-white animate-spin" />
+            <p className="text-white text-sm font-medium">Preparing stream…</p>
+          </div>
+        )}
+
         {!error && streamStatus !== 'error' && !isPlaying && isReady && (
           <div className="absolute bottom-2 left-0 right-0 flex justify-center z-10">
             <span className="text-xs text-white/60 bg-black/40 px-2 py-1 rounded">
