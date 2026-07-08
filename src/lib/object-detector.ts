@@ -8,69 +8,83 @@ export class ObjectDetector {
   private session: ort.InferenceSession | null = null;
   private metadata: ModelMetadata | null = null;
   private isInitialized = false;
+  private initPromise: Promise<void> | null = null;
 
   /**
    * Initializes the ONNX model session and loads metadata
    */
   async initialize(): Promise<void> {
-    try {
-      // Configure ONNX Runtime Web to use CDN for WASM files FIRST
-      // This ensures WASM files are always available, even with base path configurations
-      // Must be set before any ONNX Runtime operations
-      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/';
-      ort.env.wasm.simd = true;
-      ort.env.wasm.proxy = false;
+    if (this.isInitialized) return;
+    if (this.initPromise) return this.initPromise;
 
-      // Get base path for GitHub Pages compatibility
-      const basePath = import.meta.env.BASE_URL || '/';
-      
-      // Load model metadata
-      const metadataResponse = await fetch(`${basePath}models/model-metadata.json`);
-      this.metadata = await metadataResponse.json();
-      
-      // Try different execution providers in order of preference
-      // WebGPU is preferred for better performance on supported browsers
-      const executionProviders = [
-        ['webgpu'],
-        // ['wasm'], // Fallback to WASM if WebGPU is not available
-        // ['cpu']   // Final fallback to CPU
-      ];
+    this.initPromise = (async () => {
+      try {
+        // Configure ONNX Runtime Web to use CDN for WASM files FIRST
+        // This ensures WASM files are always available, even with base path configurations
+        // Must be set before any ONNX Runtime operations
+        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/';
+        ort.env.wasm.simd = true;
+        ort.env.wasm.proxy = false;
 
-      let lastError: Error | null = null;
-      
-      for (const providers of executionProviders) {
-        try {
-          console.log(`Trying execution providers: ${providers.join(', ')}`);
-          
-          this.session = await ort.InferenceSession.create(`${basePath}models/yolov12n.onnx`, {
-            executionProviders: providers,
-            graphOptimizationLevel: 'all',
-            enableCpuMemArena: true,
-            enableMemPattern: true
-          });
+        // Get base path for GitHub Pages compatibility
+        const basePath = import.meta.env.BASE_URL || '/';
+        
+        // Load model metadata
+        const metadataResponse = await fetch(`${basePath}models/model-metadata.json`);
+        this.metadata = await metadataResponse.json();
+        
+        // Try different execution providers in order of preference
+        // WebGPU is preferred, but it only allows one session per tab.
+        // Fall back to WebGL and WASM for multi-session / retry scenarios.
+        const executionProviders = [
+          ['webgpu'],
+          ['webgl'],
+          ['wasm'],
+          ['cpu'],
+        ];
 
-          // Log model input/output names for debugging
-          console.log('Model input names:', this.session.inputNames);
-          console.log('Model output names:', this.session.outputNames);
-          console.log('Model input metadata:', this.session.inputMetadata);
-          console.log('Model output metadata:', this.session.outputMetadata);
+        let lastError: Error | null = null;
+        
+        for (const providers of executionProviders) {
+          try {
+            console.log(`Trying execution providers: ${providers.join(', ')}`);
+            
+            this.session = await ort.InferenceSession.create(`${basePath}models/yolov12n.onnx`, {
+              executionProviders: providers,
+              graphOptimizationLevel: 'all',
+              enableCpuMemArena: true,
+              enableMemPattern: true
+            });
 
-          this.isInitialized = true;
-          console.log(`Object detector initialized successfully with providers: ${providers.join(', ')}`);
-          return;
-        } catch (error) {
-          console.warn(`Failed with providers ${providers.join(', ')}:`, error);
-          lastError = error as Error;
-          continue;
+            // Log model input/output names for debugging
+            console.log('Model input names:', this.session.inputNames);
+            console.log('Model output names:', this.session.outputNames);
+            console.log('Model input metadata:', this.session.inputMetadata);
+            console.log('Model output metadata:', this.session.outputMetadata);
+
+            this.isInitialized = true;
+            console.log(`Object detector initialized successfully with providers: ${providers.join(', ')}`);
+            return;
+          } catch (error) {
+            console.warn(`Failed with providers ${providers.join(', ')}:`, error);
+            lastError = error as Error;
+            continue;
+          }
         }
-      }
 
-      // If all providers failed, throw the last error
-      throw lastError || new Error('All execution providers failed');
-      
-    } catch (error) {
-      console.error('Failed to initialize object detector:', error);
-      throw error;
+        // If all providers failed, throw the last error
+        throw lastError || new Error('All execution providers failed');
+        
+      } catch (error) {
+        console.error('Failed to initialize object detector:', error);
+        throw error;
+      }
+    })();
+
+    try {
+      await this.initPromise;
+    } finally {
+      this.initPromise = null;
     }
   }
 
@@ -79,33 +93,22 @@ export class ObjectDetector {
    * @param imageData - Image data from video frame
    * @returns Array of detected objects with bounding boxes and confidence scores
    */
-  async detectObjects(imageData: ImageData): Promise<Detection[]> {
+  async detectObjects(imageData: ImageData, minConfidence?: number): Promise<Detection[]> {
     if (!this.session || !this.metadata || !this.isInitialized) {
       throw new Error('Detector not initialized');
     }
 
     try {
-      // Preprocess image
       const input = this.preprocessImage(imageData);
       
-      console.log(input);
-
-      // Run inference using actual model input/output names
       const inputName = this.session.inputNames[0];
       const outputName = this.session.outputNames[0];
-      
-      console.log(`Using input name: ${inputName}, output name: ${outputName}`);
       
       const results = await this.session.run({ [inputName]: input });
       const output = results[outputName] as ort.Tensor;
       
-      console.log('Model output results:', results);
-      console.log('Output tensor:', output);
-      console.log('Tensor shape:', output.dims);
-      console.log('Tensor data type:', output.type);
-
-      // Postprocess results
-      const detections = this.postprocessResults(output, imageData.width, imageData.height);
+      const threshold = minConfidence ?? this.metadata!.confidenceThreshold;
+      const detections = this.postprocessResults(output, imageData.width, imageData.height, threshold);
       
       return detections;
     } catch (error) {
@@ -180,8 +183,11 @@ export class ObjectDetector {
   /**
    * Converts model output to Detection objects with transformed coordinates
    */
-  private postprocessResults(output: ort.Tensor, originalWidth: number, originalHeight: number): Detection[] {
+  private postprocessResults(output: ort.Tensor, originalWidth: number, originalHeight: number, confidenceThreshold?: number): Detection[] {
     const [inputWidth, inputHeight] = this.metadata!.inputSize;
+    const threshold = confidenceThreshold ?? this.metadata!.confidenceThreshold;
+    
+    console.log(`[Detector] postprocess start: original=${originalWidth}x${originalHeight}, threshold=${threshold}`);
     
     // Calculate padding offsets for coordinate transformation
     const aspectRatio = originalWidth / originalHeight;
@@ -222,7 +228,7 @@ export class ObjectDetector {
       const classId = Math.round(outputData[startIdx + 5]); // Class ID as integer
       
       // Skip low confidence detections
-      if (confidence < this.metadata!.confidenceThreshold) continue;
+      if (confidence < threshold) continue;
       
       // Debug logging for first few detections
       if (i < 5) {
@@ -321,11 +327,16 @@ export class ObjectDetector {
     return this.isInitialized;
   }
 
+  getMetadata(): ModelMetadata | null {
+    return this.metadata;
+  }
+
   dispose(): void {
     if (this.session) {
       this.session.release();
       this.session = null;
     }
     this.isInitialized = false;
+    this.initPromise = null;
   }
 }

@@ -20,3 +20,15 @@ export interface ModelMetadata {
   confidenceThreshold: number;
   nmsThreshold: number;
 }
+
+export interface TrafficstreamSettings {
+  minConfidence: number;
+  vehicleClasses: string[];
+  countingLineY: number;
+  roiPts: Array<{ x: number; y: number }>;
+  detectionColor: string;
+  trackColor: string;
+  showLabels: boolean;
+  showRoi: boolean;
+  showCountingLine: boolean;
+}

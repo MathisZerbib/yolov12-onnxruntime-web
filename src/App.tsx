@@ -1,16 +1,17 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { FileUpload } from '@/components/file-upload';
 import { DetectionOverlay } from '@/components/detection-overlay';
+import { FileUpload } from '@/components/file-upload';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { TrafficMonitor } from '@/components/traffic-monitor';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { ObjectDetector } from '@/lib/object-detector';
-import { VideoProcessor } from '@/lib/video-processor';
-import { Detection } from '@/lib/types';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { checkBrowserCompatibility } from '@/lib/browser-checks';
-import { Play, Square, Info, Camera, CameraOff } from 'lucide-react';
+import { ObjectDetector } from '@/lib/object-detector';
+import { Detection } from '@/lib/types';
+import { VideoProcessor } from '@/lib/video-processor';
+import { Camera, CameraOff, Info, Play, Square } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import './globals.css';
 
 function App() {
@@ -23,7 +24,7 @@ function App() {
   const [videoDimensions, setVideoDimensions] = useState({ width: 640, height: 480 });
   const [imageDimensions, setImageDimensions] = useState({ width: 640, height: 480 });
   const [isInfoDialogOpen, setIsInfoDialogOpen] = useState(false);
-  const [inputType, setInputType] = useState<'upload' | 'camera'>('upload');
+  const [inputType, setInputType] = useState<'upload' | 'camera' | 'traffic'>('upload');
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -42,7 +43,7 @@ function App() {
 
   // Clear detections and file selections when changing tabs
   useEffect(() => {
-    setDetections([]);
+    if (inputType === 'traffic') return;
     
     // Clear video file selection
     if (selectedFile) {
@@ -440,7 +441,7 @@ function App() {
 
         {/* Tabs at the Top */}
         <div className="flex justify-center">
-          <Tabs value={inputType} onValueChange={(v) => setInputType(v as 'upload' | 'camera')} className="w-auto">
+          <Tabs value={inputType} onValueChange={(v) => setInputType(v as 'upload' | 'camera' | 'traffic')} className="w-auto">
             <TabsList className="inline-flex w-auto p-1 rounded-lg">
               <TabsTrigger 
                 value="upload" 
@@ -454,15 +455,36 @@ function App() {
               >
                 Live Camera
               </TabsTrigger>
+              <TabsTrigger 
+                value="traffic"
+                className="font-bold text-foreground"
+              >
+                Live Traffic
+              </TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
 
         {/* Main Content Area */}
-        <Card>
-          <CardContent className="p-6">
-            <div className="w-full">
-              {/* Upload Section - Unified Video and Image */}
+        {inputType === 'traffic' && detectorRef.current ? (
+          <div className="fixed inset-0 z-50 bg-background">
+            <div className="absolute top-4 right-4 z-50">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setInputType('upload')}
+                className="bg-background/80 backdrop-blur-sm"
+              >
+                ← Back
+              </Button>
+            </div>
+            <TrafficMonitor detector={detectorRef.current} />
+          </div>
+        ) : (
+          <Card>
+            <CardContent className="p-6">
+              <div className="w-full">
+                {/* Upload Section - Unified Video and Image */}
               {inputType === 'upload' && !selectedFile && !selectedImage && (
                 <FileUpload
                   onVideoSelect={handleVideoSelect}
@@ -745,7 +767,8 @@ function App() {
               {/* Remove the Tabs section from here - it's now at the top of the page */}
             </div>
           </CardContent>
-        </Card>
+            </Card>
+        )}
       </div>
     </div>
   );
