@@ -18,7 +18,7 @@ export interface TrafficConfig {
 }
 
 const DEFAULT_TRAFFIC_CONFIG: TrafficConfig = {
-  vehicleClasses: ['car', 'motorcycle', 'bus', 'truck', 'bicycle'],
+  vehicleClasses: ['car'],
   roiPts: [
     { x: 0, y: 0.25 },
     { x: 0, y: 1 },
@@ -32,9 +32,14 @@ interface TrackEntry {
   id: number;
   cx: number;
   cy: number;
-  prevCy: number;
+  px: number;
+  py: number;
+  vx: number;
+  vy: number;
   className: string;
   confidence: number;
+  width: number;
+  height: number;
   lastSeen: number;
   crossed: boolean;
 }
@@ -79,7 +84,7 @@ export class TrafficCounter {
     
     console.log(`[TrafficCounter] input=${detections.length} traffic=${vehicleDetections.length}`);
 
-    // Compute centroids
+    // Compute centroids for detections
     const detCentroids = vehicleDetections.map(d => ({
       cx: d.x + d.width / 2,
       cy: d.y + d.height / 2,
@@ -95,18 +100,29 @@ export class TrafficCounter {
       }
     }
 
+    // Predict next position for each active track using constant velocity model
+    const dt = 1 / 30; // assume ~30fps time step
+    const predicted = new Map<number, { cx: number; cy: number }>();
+    
+    for (const [id, track] of activeTracks) {
+      const predCx = track.cx + track.vx * dt;
+      const predCy = track.cy + track.vy * dt;
+      predicted.set(id, { cx: predCx, cy: predCy });
+    }
+
     const remainingTracks = new Map(activeTracks);
     const remainingDetCentroids = [...detCentroids];
     const matches = new Map<number, { trackId: number; det: typeof detCentroids[0] }>();
 
-    // Greedy matching: for each detection, find closest track
+    // Greedy matching: for each detection, find closest PREDICTED track position
     for (const det of remainingDetCentroids) {
       let bestId = -1;
       let bestDist = Infinity;
       
-      for (const [trackId, track] of remainingTracks) {
-        const dx = track.cx - det.cx;
-        const dy = track.cy - det.cy;
+      for (const [trackId] of remainingTracks) {
+        const pred = predicted.get(trackId)!;
+        const dx = pred.cx - det.cx;
+        const dy = pred.cy - det.cy;
         const dist = Math.sqrt(dx * dx + dy * dy);
         const threshold = Math.max(width, height) * 0.15;
         
@@ -122,15 +138,24 @@ export class TrafficCounter {
       }
     }
 
-    // Update matched tracks
+    // Update matched tracks with exponential smoothing to reduce trailing
+    const smoothing = 0.4; // lower = more responsive, higher = smoother
     for (const match of matches.values()) {
       const track = activeTracks.get(match.trackId);
       if (track) {
-        track.prevCy = track.cy;
-        track.cx = match.det.cx;
-        track.cy = match.det.cy;
+        track.px = track.cx;
+        track.py = track.cy;
+        // Smooth: interpolate between predicted and actual detection
+        const pred = predicted.get(match.trackId)!;
+        track.cx = pred.cx * smoothing + match.det.cx * (1 - smoothing);
+        track.cy = pred.cy * smoothing + match.det.cy * (1 - smoothing);
+        // Update velocity based on smoothed position
+        track.vx = (track.cx - track.px) / dt;
+        track.vy = (track.cy - track.py) / dt;
         track.lastSeen = now;
         track.confidence = match.det.detection.confidence;
+        track.width = match.det.detection.width;
+        track.height = match.det.detection.height;
       }
     }
 
@@ -146,9 +171,14 @@ export class TrafficCounter {
         id: this.nextId++,
         cx: det.cx,
         cy: det.cy,
-        prevCy: det.cy,
+        px: det.cx,
+        py: det.cy,
+        vx: 0,
+        vy: 0,
         className: det.detection.class,
         confidence: det.detection.confidence,
+        width: det.detection.width,
+        height: det.detection.height,
         lastSeen: now,
         crossed: false,
       };
@@ -157,14 +187,14 @@ export class TrafficCounter {
       }
     }
 
-    // Check line crossings
+    // Check line crossings using previous y
     const lineY = this.config.countingLineY * height;
     const threshold = Math.max(height * 0.04, 15);
     
     for (const track of activeTracks.values()) {
       if (track.crossed) continue;
       
-      if (track.prevCy < lineY - threshold && track.cy >= lineY - threshold) {
+      if (track.py < lineY - threshold && track.cy >= lineY - threshold) {
         track.crossed = true;
         this.totalCount++;
       }

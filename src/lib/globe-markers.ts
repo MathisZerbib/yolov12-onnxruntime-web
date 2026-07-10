@@ -1,12 +1,10 @@
 export interface LiveMarker {
   id: string
+  name: string
+  locationLabel: string
   location: [number, number]
   href?: string
-}
-
-export interface GenericMarker {
-  location: [number, number]
-  size: number
+  streamUrl: string
 }
 
 export interface Room {
@@ -18,29 +16,21 @@ export interface Room {
 }
 
 export const ROOM_MARKERS: readonly LiveMarker[] = Object.freeze([
-  { id: "tokyo", location: [35.68, 139.65], href: "/room/tokyo" },
-  { id: "sydney", location: [-33.87, 151.21], href: "/room/sydney" },
-  { id: "sf", location: [37.78, -122.44], href: "/room/sf" },
-  { id: "paris", location: [48.86, 2.35], href: "/room/paris" },
-  { id: "nyc", location: [40.71, -74.01], href: "/room/nyc" },
-  { id: "london", location: [51.51, -0.13], href: "/room/london" },
+  { id: "tokyo",  name: "Tokyo",  locationLabel: "Shibuya",       location: [35.68, 139.65],  href: "/room/tokyo",  streamUrl: "https://wlbt-wowza.streamguys1.com/live/byram.stream/chunks.m3u8" },
+  { id: "sydney", name: "Sydney", locationLabel: "CBD",           location: [-33.87, 151.21], href: "/room/sydney", streamUrl: "https://live.field59.com/klkn/klkn9/chunklist.m3u8" },
+  { id: "sf",     name: "San Francisco", locationLabel: "Market St", location: [37.78, -122.44], href: "/room/sf",  streamUrl: "https://media-hls-az1.wral.com/livehttporigin/_definst_/mp4:chapel_hill_cam.stream/chunklist.m3u8" },
+  { id: "paris",  name: "Paris",  locationLabel: "Champs-Élysées", location: [48.86, 2.35],    href: "/room/paris", streamUrl: "https://s87.ipcamlive.com/streams_storage/57xme5tijy8v39x1b/stream.m3u8" },
+  { id: "nyc",    name: "New York", locationLabel: "Times Square", location: [40.71, -74.01],  href: "/room/nyc",   streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" },
+  { id: "london", name: "London", locationLabel: "Oxford St",     location: [51.51, -0.13],    href: "/room/london", streamUrl: "https://test-streams.mux.dev/pts_shift/master.m3u8" },
 ])
 
-export const GENERIC_MARKERS: readonly GenericMarker[] = Object.freeze([
-  { location: [14.5995, 120.9842], size: 0.03 },
-  { location: [19.076, 72.8777], size: 0.1 },
-  { location: [23.8103, 90.4125], size: 0.05 },
-  { location: [30.0444, 31.2357], size: 0.07 },
-  { location: [39.9042, 116.4074], size: 0.08 },
-  { location: [-23.5505, -46.6333], size: 0.1 },
-  { location: [19.4326, -99.1332], size: 0.1 },
-])
-
-export const ROOMS: readonly Room[] = Object.freeze([
-  { id: "tokyo",  name: "Tokyo",         location: "Shibuya",        viewers: 1567, streamUrl: "https://wlbt-wowza.streamguys1.com/live/byram.stream/chunks.m3u8" },
-  { id: "sydney", name: "Sydney",        location: "CBD",            viewers: 892,  streamUrl: "https://live.field59.com/klkn/klkn9/chunklist.m3u8" },
-  { id: "sf",     name: "San Francisco", location: "Market St",      viewers: 1284, streamUrl: "https://media-hls-az1.wral.com/livehttporigin/_definst_/mp4:chapel_hill_cam.stream/chunklist.m3u8" },
-  { id: "paris",  name: "Paris",         location: "Champs-Élysées", viewers: 743,  streamUrl: "https://s87.ipcamlive.com/streams_storage/57xme5tijy8v39x1b/stream.m3u8" },
-  { id: "nyc",    name: "New York",      location: "Times Square",   viewers: 1102, streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" },
-  { id: "london", name: "London",        location: "Oxford St",      viewers: 1342, streamUrl: "https://test-streams.mux.dev/dai-discontinuity-deltatre/dai-discontinuity-deltatre.m3u8" },
-])
+// ROOMS dérivé de ROOM_MARKERS pour éviter la duplication des streamUrls et names
+export const ROOMS: readonly Room[] = Object.freeze(
+  ROOM_MARKERS.map((m, i) => ({
+    id: m.id,
+    name: m.name,
+    location: m.locationLabel,
+    streamUrl: m.streamUrl,
+    viewers: [1567, 892, 1284, 743, 1102, 1342][i],
+  }))
+)

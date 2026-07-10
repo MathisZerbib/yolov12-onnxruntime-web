@@ -1,98 +1,57 @@
 import * as ort from 'onnxruntime-web/webgpu';
 import { Detection, ModelMetadata } from './types';
 
-/**
- * Object detection using YOLOv12 ONNX model via ONNX Runtime Web
- */
 export class ObjectDetector {
   private session: ort.InferenceSession | null = null;
   private metadata: ModelMetadata | null = null;
   private isInitialized = false;
-  private initPromise: Promise<void> | null = null;
+  private preCanvas: HTMLCanvasElement | null = null;
+  private preCtx: CanvasRenderingContext2D | null = null;
+  private srcCanvas: HTMLCanvasElement | null = null;
+  private srcCtx: CanvasRenderingContext2D | null = null;
 
-  /**
-   * Initializes the ONNX model session and loads metadata
-   */
   async initialize(): Promise<void> {
-    if (this.isInitialized) return;
-    if (this.initPromise) return this.initPromise;
-
-    this.initPromise = (async () => {
-      try {
-        // Configure ONNX Runtime Web to use CDN for WASM files FIRST
-        // This ensures WASM files are always available, even with base path configurations
-        // Must be set before any ONNX Runtime operations
-        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/';
-        ort.env.wasm.simd = true;
-        ort.env.wasm.proxy = false;
-
-        // Get base path for GitHub Pages compatibility
-        const basePath = import.meta.env.BASE_URL || '/';
-        
-        // Load model metadata
-        const metadataResponse = await fetch(`${basePath}models/model-metadata.json`);
-        this.metadata = await metadataResponse.json();
-        
-        // Try different execution providers in order of preference
-        // WebGPU is preferred, but it only allows one session per tab.
-        // Fall back to WebGL and WASM for multi-session / retry scenarios.
-        const executionProviders = [
-          ['webgpu'],
-          ['webgl'],
-          ['wasm'],
-          ['cpu'],
-        ];
-
-        let lastError: Error | null = null;
-        
-        for (const providers of executionProviders) {
-          try {
-            console.log(`Trying execution providers: ${providers.join(', ')}`);
-            
-            this.session = await ort.InferenceSession.create(`${basePath}models/yolov12n.onnx`, {
-              executionProviders: providers,
-              graphOptimizationLevel: 'all',
-              enableCpuMemArena: true,
-              enableMemPattern: true
-            });
-
-            // Log model input/output names for debugging
-            console.log('Model input names:', this.session.inputNames);
-            console.log('Model output names:', this.session.outputNames);
-            console.log('Model input metadata:', this.session.inputMetadata);
-            console.log('Model output metadata:', this.session.outputMetadata);
-
-            this.isInitialized = true;
-            console.log(`Object detector initialized successfully with providers: ${providers.join(', ')}`);
-            return;
-          } catch (error) {
-            console.warn(`Failed with providers ${providers.join(', ')}:`, error);
-            lastError = error as Error;
-            continue;
-          }
-        }
-
-        // If all providers failed, throw the last error
-        throw lastError || new Error('All execution providers failed');
-        
-      } catch (error) {
-        console.error('Failed to initialize object detector:', error);
-        throw error;
-      }
-    })();
-
     try {
-      await this.initPromise;
-    } finally {
-      this.initPromise = null;
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/';
+      ort.env.wasm.simd = true;
+      ort.env.wasm.proxy = false;
+
+      const basePath = import.meta.env.BASE_URL || '/';
+      
+      const metadataResponse = await fetch(`${basePath}models/model-metadata.json`);
+      this.metadata = await metadataResponse.json();
+      
+      const executionProviders = [
+        ['webgpu'],
+      ];
+
+      let lastError: Error | null = null;
+      
+      for (const providers of executionProviders) {
+        try {
+          this.session = await ort.InferenceSession.create(`${basePath}models/yolov12n.onnx`, {
+            executionProviders: providers,
+            graphOptimizationLevel: 'all',
+            enableCpuMemArena: true,
+            enableMemPattern: true
+          });
+
+          this.isInitialized = true;
+          return;
+        } catch (error) {
+          lastError = error as Error;
+          continue;
+        }
+      }
+
+      throw lastError || new Error('All execution providers failed');
+      
+    } catch (error) {
+      console.error('Failed to initialize object detector:', error);
+      throw error;
     }
   }
 
-  /**
-   * Detects objects in an image frame
-   * @param imageData - Image data from video frame
-   * @returns Array of detected objects with bounding boxes and confidence scores
-   */
   async detectObjects(imageData: ImageData, minConfidence?: number): Promise<Detection[]> {
     if (!this.session || !this.metadata || !this.isInitialized) {
       throw new Error('Detector not initialized');
@@ -106,7 +65,7 @@ export class ObjectDetector {
       
       const results = await this.session.run({ [inputName]: input });
       const output = results[outputName] as ort.Tensor;
-      
+
       const threshold = minConfidence ?? this.metadata!.confidenceThreshold;
       const detections = this.postprocessResults(output, imageData.width, imageData.height, threshold);
       
@@ -117,210 +76,169 @@ export class ObjectDetector {
     }
   }
 
-  /**
-   * Preprocesses image for model input: resizes, pads, and normalizes to [0,1]
-   */
   private preprocessImage(imageData: ImageData): ort.Tensor {
     const [inputWidth, inputHeight] = this.metadata!.inputSize;
-    
-    // Create canvas for padded image
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d')!;
-    canvas.width = inputWidth;
-    canvas.height = inputHeight;
-    
-    // Fill canvas with black background (padding)
+
+    if (!this.preCanvas || this.preCanvas.width !== inputWidth || this.preCanvas.height !== inputHeight) {
+      this.preCanvas = document.createElement('canvas');
+      this.preCtx = this.preCanvas.getContext('2d', { willReadFrequently: true })!;
+      this.preCanvas.width = inputWidth;
+      this.preCanvas.height = inputHeight;
+
+      this.srcCanvas = document.createElement('canvas');
+      this.srcCtx = this.srcCanvas.getContext('2d', { willReadFrequently: true })!;
+    }
+
+    if (this.srcCanvas!.width !== imageData.width || this.srcCanvas!.height !== imageData.height) {
+      this.srcCanvas!.width = imageData.width;
+      this.srcCanvas!.height = imageData.height;
+    }
+
+    this.srcCtx!.putImageData(imageData, 0, 0);
+
+    const ctx = this.preCtx!;
     ctx.fillStyle = '#000000';
     ctx.fillRect(0, 0, inputWidth, inputHeight);
-    
-    // Calculate scaling and positioning to maintain aspect ratio
+
     const aspectRatio = imageData.width / imageData.height;
     const targetAspectRatio = inputWidth / inputHeight;
-    
+
     let drawWidth, drawHeight, offsetX, offsetY;
-    
+
     if (aspectRatio > targetAspectRatio) {
-      // Image is wider - fit to width, add padding top/bottom
       drawWidth = inputWidth;
       drawHeight = inputWidth / aspectRatio;
       offsetX = 0;
       offsetY = (inputHeight - drawHeight) / 2;
     } else {
-      // Image is taller - fit to height, add padding left/right
       drawHeight = inputHeight;
       drawWidth = inputHeight * aspectRatio;
       offsetX = (inputWidth - drawWidth) / 2;
       offsetY = 0;
     }
-    
-    // Create a temporary canvas to hold the original image data
-    const tempCanvas = document.createElement('canvas');
-    const tempCtx = tempCanvas.getContext('2d')!;
-    tempCanvas.width = imageData.width;
-    tempCanvas.height = imageData.height;
-    
-    // Put the ImageData onto the temporary canvas
-    tempCtx.putImageData(imageData, 0, 0);
-    
-    // Draw the image centered with padding, maintaining aspect ratio
-    ctx.drawImage(tempCanvas, 0, 0, imageData.width, imageData.height, 
-                  offsetX, offsetY, drawWidth, drawHeight);
-    
+
+    ctx.drawImage(this.srcCanvas!, 0, 0, imageData.width, imageData.height, offsetX, offsetY, drawWidth, drawHeight);
+
     const paddedImageData = ctx.getImageData(0, 0, inputWidth, inputHeight);
-    
-    // Convert to tensor (normalize to 0-1)
+
     const data = new Float32Array(inputWidth * inputHeight * 3);
-    for (let i = 0; i < paddedImageData.data.length; i += 4) {
-      const pixelIndex = i / 4;
-      data[pixelIndex] = paddedImageData.data[i] / 255;         // R
-      data[pixelIndex + inputWidth * inputHeight] = paddedImageData.data[i + 1] / 255;     // G
-      data[pixelIndex + 2 * inputWidth * inputHeight] = paddedImageData.data[i + 2] / 255; // B
+    const src = paddedImageData.data;
+    const len = src.length;
+
+    for (let i = 0, j = 0; i < len; i += 4, j++) {
+      data[j] = src[i] / 255;
+      data[j + inputWidth * inputHeight] = src[i + 1] / 255;
+      data[j + 2 * inputWidth * inputHeight] = src[i + 2] / 255;
     }
-    
+
     return new ort.Tensor('float32', data, [1, 3, inputHeight, inputWidth]);
   }
 
-  /**
-   * Converts model output to Detection objects with transformed coordinates
-   */
-  private postprocessResults(output: ort.Tensor, originalWidth: number, originalHeight: number, confidenceThreshold?: number): Detection[] {
+  private applyNMS(detections: Detection[]): Detection[] {
+    detections.sort((a, b) => b.confidence - a.confidence);
+
+    const filtered: Detection[] = [];
+    const len = detections.length;
+    const used = new Uint8Array(len);
+
+    for (let i = 0; i < len; i++) {
+      if (used[i]) continue;
+
+      const detection = detections[i];
+      filtered.push(detection);
+      used[i] = 1;
+
+      const x1 = detection.x;
+      const y1 = detection.y;
+      const x2 = x1 + detection.width;
+      const y2 = y1 + detection.height;
+      const area = detection.width * detection.height;
+
+      for (let j = i + 1; j < len; j++) {
+        if (used[j]) continue;
+
+        const other = detections[j];
+        const ix1 = Math.max(x1, other.x);
+        const iy1 = Math.max(y1, other.y);
+        const ix2 = Math.min(x2, other.x + other.width);
+        const iy2 = Math.min(y2, other.y + other.height);
+
+        if (ix2 <= ix1 || iy2 <= iy1) continue;
+
+        const intersection = (ix2 - ix1) * (iy2 - iy1);
+        const union = area + other.width * other.height - intersection;
+
+        if (intersection / union > this.metadata!.nmsThreshold) {
+          used[j] = 1;
+        }
+      }
+    }
+
+    return filtered;
+  }
+
+  private postprocessResults(output: ort.Tensor, originalWidth: number, originalHeight: number, confidenceThreshold: number): Detection[] {
     const [inputWidth, inputHeight] = this.metadata!.inputSize;
-    const threshold = confidenceThreshold ?? this.metadata!.confidenceThreshold;
-    
-    console.log(`[Detector] postprocess start: original=${originalWidth}x${originalHeight}, threshold=${threshold}`);
-    
-    // Calculate padding offsets for coordinate transformation
+
     const aspectRatio = originalWidth / originalHeight;
     const targetAspectRatio = inputWidth / inputHeight;
-    
+
     let paddingX, paddingY, scaleX, scaleY;
-    
+
     if (aspectRatio > targetAspectRatio) {
-      // Image was fitted to width, padded top/bottom
       scaleX = originalWidth / inputWidth;
-      scaleY = originalWidth / inputWidth; // Same scale for both dimensions
+      scaleY = originalWidth / inputWidth;
       paddingX = 0;
       paddingY = (inputHeight - (inputWidth / aspectRatio)) / 2;
     } else {
-      // Image was fitted to height, padded left/right
       scaleX = originalHeight / inputHeight;
-      scaleY = originalHeight / inputHeight; // Same scale for both dimensions
+      scaleY = originalHeight / inputHeight;
       paddingX = (inputWidth - (inputHeight * aspectRatio)) / 2;
       paddingY = 0;
     }
-    
+
     const detections: Detection[] = [];
     const outputData = output.data as Float32Array;
-    
-    // YOLO output format: [batch, num_detections, 6] where 6 = x1, y1, x2, y2, confidence, class_id
-    const numDetections = output.dims[1]; // 300
-    console.log(`Processing ${numDetections} detections from tensor shape:`, output.dims);
-    
+    const classes = this.metadata!.classes;
+    const numDetections = output.dims[1];
+
     for (let i = 0; i < numDetections; i++) {
-      const startIdx = i * 6; // Fixed 6 values per detection
-      
-      // Get bounding box coordinates (x1, y1, x2, y2)
+      const startIdx = i * 6;
+
       const x1 = outputData[startIdx];
       const y1 = outputData[startIdx + 1];
       const x2 = outputData[startIdx + 2];
       const y2 = outputData[startIdx + 3];
       const confidence = outputData[startIdx + 4];
-      const classId = Math.round(outputData[startIdx + 5]); // Class ID as integer
-      
-      // Skip low confidence detections
-      if (confidence < threshold) continue;
-      
-      // Debug logging for first few detections
-      if (i < 5) {
-        console.log(`Detection ${i}:`, {
-          x1, y1, x2, y2, confidence, classId,
-          className: this.metadata!.classes[classId] || `class_${classId}`
-        });
-      }
-      
-      // Transform from padded coordinates to original image coordinates
+      const classId = Math.round(outputData[startIdx + 5]);
+
+      if (confidence < confidenceThreshold) continue;
+
       const transformedX1 = (x1 - paddingX) * scaleX;
       const transformedY1 = (y1 - paddingY) * scaleY;
       const transformedX2 = (x2 - paddingX) * scaleX;
       const transformedY2 = (y2 - paddingY) * scaleY;
-      
-      // Convert to Detection format (x, y, width, height)
+
       const x = Math.max(0, transformedX1);
       const y = Math.max(0, transformedY1);
       const width = Math.max(0, transformedX2 - transformedX1);
       const height = Math.max(0, transformedY2 - transformedY1);
-      
-      // Get class name from metadata
-      const className = this.metadata!.classes[classId] || `class_${classId}`;
-      
-      const detection: Detection = {
-        x: Math.max(0, x),
-        y: Math.max(0, y),
+
+      const className = classes[classId] || `class_${classId}`;
+
+      if (className !== 'car') continue;
+
+      detections.push({
+        x,
+        y,
         width: Math.min(width, originalWidth - x),
         height: Math.min(height, originalHeight - y),
-        confidence: confidence,
+        confidence,
         class: className
-      };
-      
-      detections.push(detection);
+      });
     }
-    
-    console.log(`Found ${detections.length} detections after filtering`);
-    
-    // Apply Non-Maximum Suppression
+
     return this.applyNMS(detections);
-  }
-
-  /**
-   * Applies Non-Maximum Suppression to remove overlapping detections
-   */
-  private applyNMS(detections: Detection[]): Detection[] {
-    // Sort by confidence
-    detections.sort((a, b) => b.confidence - a.confidence);
-    
-    const filtered: Detection[] = [];
-    const used = new Set<number>();
-    
-    for (let i = 0; i < detections.length; i++) {
-      if (used.has(i)) continue;
-      
-      const detection = detections[i];
-      filtered.push(detection);
-      used.add(i);
-      
-      // Remove overlapping detections
-      for (let j = i + 1; j < detections.length; j++) {
-        if (used.has(j)) continue;
-        
-        const other = detections[j];
-        const iou = this.calculateIoU(detection, other);
-        
-        if (iou > this.metadata!.nmsThreshold) {
-          used.add(j);
-        }
-      }
-    }
-    
-    return filtered;
-  }
-
-  /**
-   * Calculates Intersection over Union (IoU) between two detections
-   */
-  private calculateIoU(det1: Detection, det2: Detection): number {
-    const x1 = Math.max(det1.x, det2.x);
-    const y1 = Math.max(det1.y, det2.y);
-    const x2 = Math.min(det1.x + det1.width, det2.x + det2.width);
-    const y2 = Math.min(det1.y + det1.height, det2.y + det2.height);
-    
-    if (x2 <= x1 || y2 <= y1) return 0;
-    
-    const intersection = (x2 - x1) * (y2 - y1);
-    const area1 = det1.width * det1.height;
-    const area2 = det2.width * det2.height;
-    const union = area1 + area2 - intersection;
-    
-    return intersection / union;
   }
 
   isReady(): boolean {
@@ -336,7 +254,36 @@ export class ObjectDetector {
       this.session.release();
       this.session = null;
     }
+    this.preCanvas = null;
+    this.preCtx = null;
+    this.srcCanvas = null;
+    this.srcCtx = null;
     this.isInitialized = false;
-    this.initPromise = null;
   }
+}
+
+// Shared singleton so we never create two WebGPU inference sessions at the
+// same time (onnxruntime-web throws "another WebGPU EP inference session is
+// being created" when sessions are created concurrently on one device).
+let sharedDetector: ObjectDetector | null = null;
+let sharedInitPromise: Promise<ObjectDetector> | null = null;
+
+export function getSharedDetector(): Promise<ObjectDetector> {
+  if (sharedDetector && sharedDetector.isReady()) {
+    return Promise.resolve(sharedDetector);
+  }
+  if (!sharedInitPromise) {
+    const detector = new ObjectDetector();
+    sharedInitPromise = detector
+      .initialize()
+      .then(() => {
+        sharedDetector = detector;
+        return detector;
+      })
+      .catch((err) => {
+        sharedInitPromise = null;
+        throw err;
+      });
+  }
+  return sharedInitPromise;
 }

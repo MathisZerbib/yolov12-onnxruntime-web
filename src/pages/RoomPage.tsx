@@ -110,7 +110,7 @@ export default function RoomPage() {
         ctx.drawImage(video, 0, 0, w, h);
         try {
           const imageData = ctx.getImageData(0, 0, w, h);
-          const newDetections = await detector.detectObjects(imageData, 0.25);
+          const newDetections = await detector.detectObjects(imageData);
           counterRef.current.update(newDetections, w, h);
           setCount(counterRef.current.getTotalCount());
           setDetections(newDetections);

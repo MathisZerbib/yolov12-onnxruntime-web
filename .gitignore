@@ -48,3 +48,7 @@ next-env.d.ts
 
 # build output
 dist/
+
+# agents
+
+.agents/

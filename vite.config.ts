@@ -18,6 +18,18 @@ export default defineConfig({
     assetsDir: 'assets',
   },
   server: {
+    // En dev, on NE pose PAS COEP (require-corp) : cela bloquerait tous les flux
+    // HLS cross-origin (ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep)
+    // puisque les serveurs de test n'envoient pas d'en-tête CORP/Cross-Origin-Resource-Policy.
+    // ONNX Runtime Web fonctionne en dev sans SharedArrayBuffer (fallback wasm classique).
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+    },
+  },
+  preview: {
+    // En preview (build de prod), on active COEP pour débloquer SharedArrayBuffer /
+    // les threads ONNX. Les flux HLS cross-origin restent bloqués → ils nécessitent
+    // un proxy same-origin ou des flux CORS-enabled en production.
     headers: {
       'Cross-Origin-Embedder-Policy': 'require-corp',
       'Cross-Origin-Opener-Policy': 'same-origin',

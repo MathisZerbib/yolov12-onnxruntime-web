@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { Loader2 } from 'lucide-react';
 import { Detection } from '@/lib/types';
-import { DetectionOverlay } from '@/components/detection-overlay';
 import { ObjectDetector } from '@/lib/object-detector';
 import { StreamConfig, TrafficCounter } from '@/lib/traffic-counter';
 import { Play, Square, AlertTriangle, Camera, Wifi, WifiOff, Eye, TestTube } from 'lucide-react';
@@ -14,11 +13,12 @@ interface StreamTileProps {
   onError?: (name: string, error: string) => void;
   isActive?: boolean;
   onToggle?: (name: string, active: boolean) => void;
+  onOpen?: () => void;
 }
 
 type StreamStatus = 'idle' | 'loading' | 'playing' | 'stalled' | 'error';
 
-export function StreamTile({ config, detector, onError, isActive = false, onToggle }: StreamTileProps) {
+export function StreamTile({ config, detector, onError, isActive = false, onToggle, onOpen }: StreamTileProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const frameCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -29,6 +29,7 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
   const lastFrameTimeRef = useRef(0);
   const frameCountRef = useRef(0);
   const detectionCountRef = useRef(0);
+  const lastUiUpdateRef = useRef(0);
 
   const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [isReady, setIsReady] = useState(false);
@@ -40,19 +41,18 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
   const [framesProcessed, setFramesProcessed] = useState(0);
   const [frameTestResult, setFrameTestResult] = useState<string | null>(null);
   const [fps, setFps] = useState(0);
-  const [detections, setDetections] = useState<Detection[]>([]);
   const fpsHistoryRef = useRef<number[]>([]);
   const lastFpsUpdateRef = useRef(0);
 
   useEffect(() => {
     counterRef.current = new TrafficCounter();
+    frameCountRef.current = 0;
+    detectionCountRef.current = 0;
     setCount(0);
     setLastDetectionCount(0);
     setFramesProcessed(0);
-    frameCountRef.current = 0;
-    detectionCountRef.current = 0;
     setFrameTestResult(null);
-    
+
     if (detector.getMetadata()) {
       counterRef.current.setClassNames(detector.getMetadata()!.classes);
     }
@@ -87,7 +87,6 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
         const w = video.videoWidth || 1280;
         const h = video.videoHeight || 720;
-        console.log(`[StreamTile] ${config.name} manifest parsed: ${w}x${h}`);
         setVideoSize({ width: w, height: h });
         setIsReady(true);
         setStreamStatus('playing');
@@ -95,7 +94,6 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
       });
       
       hls.on(Hls.Events.ERROR, (_, data) => {
-        console.error(`[StreamTile] ${config.name} HLS error:`, data);
         if (data.fatal) {
           const errMsg = data.type === Hls.ErrorTypes.NETWORK_ERROR 
             ? 'Network error loading stream' 
@@ -122,7 +120,6 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
       video.addEventListener('loadedmetadata', () => {
         const w = video.videoWidth || 1280;
         const h = video.videoHeight || 720;
-        console.log(`[StreamTile] ${config.name} native HLS loaded: ${w}x${h}`);
         setVideoSize({ width: w, height: h });
         setIsReady(true);
         setStreamStatus('playing');
@@ -136,10 +133,9 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
         hlsRef.current = null;
       }
     };
-  }, [config.url, onError]);
+  }, [config.url, onError, streamStatus]);
 
   const startProcessing = useCallback(() => {
-    console.log(`[StreamTile] ${config.name} starting detection, detector ready=${detector.isReady()}`);
     if (!detector.isReady()) {
       setError('Model not ready yet');
       return;
@@ -148,16 +144,39 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
     isProcessingRef.current = true;
     lastFrameTimeRef.current = 0;
     runDetectionLoop();
-  }, [detector, config.name]);
+  }, [detector]);
 
   const stopProcessing = useCallback(() => {
-    console.log(`[StreamTile] ${config.name} stopping detection`);
     isProcessingRef.current = false;
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
     }
-  }, [config.name]);
+  }, []);
+
+  const drawDetections = useCallback((ctx: CanvasRenderingContext2D, detections: Detection[], width: number, height: number) => {
+    ctx.clearRect(0, 0, width, height);
+
+    for (const det of detections) {
+      ctx.strokeStyle = '#EF4444';
+      ctx.lineWidth = Math.max(2, width * 0.003);
+      ctx.strokeRect(det.x, det.y, det.width, det.height);
+
+      const label = `${det.class} ${(det.confidence * 100).toFixed(0)}%`;
+      ctx.font = `bold ${Math.max(12, width * 0.018)}px Arial`;
+      const textW = ctx.measureText(label).width;
+      const labelH = Math.max(18, width * 0.028);
+      const labelX = det.x;
+      const labelY = Math.max(0, det.y - labelH);
+
+      ctx.fillStyle = '#EF4444';
+      ctx.fillRect(labelX, labelY, textW + 10, labelH);
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textBaseline = 'top';
+      ctx.fillText(label, labelX + 5, labelY + 4);
+    }
+  }, []);
 
   const runDetectionLoop = useCallback(async () => {
     if (!isProcessingRef.current) return;
@@ -175,10 +194,9 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
 
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       const now = performance.now();
-      if (now - lastFrameTimeRef.current > 250) {
+      if (now - lastFrameTimeRef.current > 80) {
         lastFrameTimeRef.current = now;
         
-        // Calculate FPS
         const fpsHistory = fpsHistoryRef.current;
         if (fpsHistory.length === 0 || now - lastFpsUpdateRef.current >= 1000) {
           lastFpsUpdateRef.current = now;
@@ -202,15 +220,16 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           }
           
           const ctx = frameCanvas.getContext('2d', { willReadFrequently: true });
-          if (!ctx) {
-            console.warn(`[StreamTile] ${config.name} no canvas context`);
-            return;
-          }
+          if (!ctx) return;
           
-          frameCanvas.width = w;
-          frameCanvas.height = h;
-          overlayCanvas.width = w;
-          overlayCanvas.height = h;
+          if (frameCanvas.width !== w || frameCanvas.height !== h) {
+            frameCanvas.width = w;
+            frameCanvas.height = h;
+          }
+          if (overlayCanvas.width !== w || overlayCanvas.height !== h) {
+            overlayCanvas.width = w;
+            overlayCanvas.height = h;
+          }
           
           ctx.drawImage(video, 0, 0, w, h);
           
@@ -219,25 +238,40 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
             imageData = ctx.getImageData(0, 0, w, h);
           } catch (e) {
             const msg = `Cannot read video frames (CORS). Server must send Access-Control-Allow-Origin headers or use same-origin sources.`;
-            console.error(`[StreamTile] ${config.name} ${msg}`, e);
             setError(msg);
             setStreamStatus('error');
             return;
           }
           
-          const detections = await detector.detectObjects(imageData, 0.25);
+          const allDetections = await detector.detectObjects(imageData);
+          const rawDetections = allDetections.filter(d => d.class.toLowerCase() === 'car');
           frameCountRef.current++;
-          detectionCountRef.current += detections.length;
-          setFramesProcessed(frameCountRef.current);
-          setLastDetectionCount(detections.length);
-          setDetections(detections);
+          detectionCountRef.current += rawDetections.length;
 
-          console.log(`[StreamTile] ${config.name} frame=${frameCountRef.current} detections=${detections.length}`, detections.slice(0, 3));
+          const tracks = counterRef.current.update(rawDetections, w, h);
+          const total = counterRef.current.getTotalCount();
 
-          const tracks = counterRef.current.update(detections, w, h);
-          setCount(counterRef.current.getTotalCount());
+          const smoothedDetections: Detection[] = tracks.map(track => ({
+            x: Math.max(0, track.cx - (track.width || 40) / 2),
+            y: Math.max(0, track.cy - (track.height || 40) / 2),
+            width: track.width || 40,
+            height: track.height || 40,
+            confidence: track.confidence,
+            class: track.className,
+          }));
 
-          drawAnnotations(overlayCanvas, tracks, w, h);
+          const overlayCtx = overlayCanvas.getContext('2d');
+          if (overlayCtx) {
+            drawDetections(overlayCtx, smoothedDetections, w, h);
+          }
+
+          const now2 = performance.now();
+          if (now2 - lastUiUpdateRef.current > 200) {
+            lastUiUpdateRef.current = now2;
+            setCount(total);
+            setFramesProcessed(frameCountRef.current);
+            setLastDetectionCount(rawDetections.length);
+          }
         } catch (e) {
           console.error(`[StreamTile] ${config.name} detection loop error:`, e);
         }
@@ -247,18 +281,11 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
     if (isProcessingRef.current) {
       animFrameRef.current = requestAnimationFrame(runDetectionLoop);
     }
-  }, [detector, videoSize, config.name]);
+  }, [detector, videoSize, config.name, drawDetections]);
 
   const testFrameCapture = useCallback(async () => {
     const video = videoRef.current;
     const frameCanvas = frameCanvasRef.current;
-    console.log('[StreamTile] Test Frame clicked', {
-      video: !!video,
-      canvas: !!frameCanvas,
-      videoWidth: video?.videoWidth,
-      videoHeight: video?.videoHeight,
-      readyState: video?.readyState,
-    });
     
     if (!video || !frameCanvas) {
       setFrameTestResult('Video or canvas not ready');
@@ -273,8 +300,6 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
         attempts++;
         const w = video.videoWidth || videoSize.width;
         const h = video.videoHeight || videoSize.height;
-        
-        console.log(`[StreamTile] Test Frame attempt ${attempts}: ${w}x${h}, readyState=${video.readyState}`);
         
         if (w > 0 && h > 0 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
           const ctx = frameCanvas.getContext('2d', { willReadFrequently: true });
@@ -305,67 +330,6 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
     setFrameTestResult(result);
   }, [videoSize]);
 
-  const drawAnnotations = (
-    canvas: HTMLCanvasElement,
-    tracks: any[],
-    width: number,
-    height: number
-  ) => {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    
-    ctx.clearRect(0, 0, width, height);
-    
-    const config = counterRef.current.getConfig();
-    if (config.roiPts.length > 0) {
-      ctx.beginPath();
-      ctx.moveTo(config.roiPts[0].x * width, config.roiPts[0].y * height);
-      for (let i = 1; i < config.roiPts.length; i++) {
-        ctx.lineTo(config.roiPts[i].x * width, config.roiPts[i].y * height);
-      }
-      ctx.closePath();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-      ctx.lineWidth = Math.max(1, width * 0.002);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
-      ctx.fill();
-    }
-    
-    const lineY = config.countingLineY * height;
-    ctx.beginPath();
-    ctx.moveTo(0, lineY);
-    ctx.lineTo(width, lineY);
-    ctx.strokeStyle = '#EF4444';
-    ctx.lineWidth = Math.max(2, width * 0.003);
-    ctx.setLineDash([Math.max(5, width * 0.01), Math.max(3, width * 0.005)]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    tracks.forEach(track => {
-      const cx = track.cx;
-      const cy = track.cy;
-      const color = track.crossed ? '#10B981' : '#FBBF24';
-      const radius = Math.max(4, width * 0.009);
-      
-      ctx.beginPath();
-      ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = Math.max(1, width * 0.002);
-      ctx.stroke();
-      
-      if (track.crossed && track.prevCy) {
-        ctx.beginPath();
-        ctx.moveTo(cx, track.prevCy);
-        ctx.lineTo(cx, cy);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = Math.max(1.5, width * 0.003);
-        ctx.stroke();
-      }
-    });
-  };
-
   const toggleStartStop = () => {
     if (isProcessingRef.current) {
       stopProcessing();
@@ -388,17 +352,19 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
     };
   }, [stopProcessing]);
 
+  // Auto-start/stop when the `isActive` prop changes. Guarded by a ref so it
+  // never re-runs on every render (the previous version called
+  // `detector.isReady()` inside the deps array, causing an infinite loop).
+  const wasActiveRef = useRef(false);
   useEffect(() => {
-    if (isActive && detector.isReady() && !isPlaying) {
-      console.log(`[StreamTile] ${config.name} activating detection via isActive`);
+    if (isActive && !wasActiveRef.current && detector.isReady() && !isProcessingRef.current) {
       startProcessing();
-      setIsPlaying(true);
-    } else if (!isActive && isPlaying) {
-      console.log(`[StreamTile] ${config.name} deactivating detection via isActive`);
+      wasActiveRef.current = true;
+    } else if (!isActive && wasActiveRef.current) {
       stopProcessing();
-      setIsPlaying(false);
+      wasActiveRef.current = false;
     }
-  }, [isActive, detector.isReady(), isPlaying, startProcessing, stopProcessing, config.name]);
+  }, [isActive, detector, startProcessing, stopProcessing]);
 
   const getStatusIcon = () => {
     switch (streamStatus) {
@@ -419,15 +385,11 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           muted
           playsInline
           autoPlay
-          onPlay={() => {
-            console.log(`[StreamTile] ${config.name} video playing`);
-            setStreamStatus('playing');
-          }}
+          onPlay={() => setStreamStatus('playing')}
           onWaiting={() => setStreamStatus('stalled')}
           onPlaying={() => setStreamStatus('playing')}
           onStalled={() => setStreamStatus('stalled')}
           onError={() => {
-            console.error(`[StreamTile] ${config.name} video playback error`);
             setStreamStatus('error');
             setError('Stream playback error');
             if (onError) onError(config.name, 'Video playback error');
@@ -440,20 +402,11 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           className="hidden"
           aria-hidden="true"
         />
-        {/* Traffic ROI / counting line / tracks */}
+        {/* Detection overlay drawn imperatively for zero React overhead */}
         <canvas
           ref={overlayCanvasRef}
           className="absolute inset-0 w-full h-full object-contain pointer-events-none"
         />
-        {/* Detection bounding boxes, aligned with the (letterboxed) video */}
-        {isReady && detections.length > 0 && (
-          <DetectionOverlay
-            detections={detections}
-            videoWidth={videoSize.width}
-            videoHeight={videoSize.height}
-            className="absolute inset-0 object-contain"
-          />
-        )}
         
         <div className="absolute top-0 left-0 right-0 flex justify-between items-center z-10 bg-gradient-to-b from-black/70 to-transparent p-2">
           <div className="flex items-center gap-1.5">
@@ -541,6 +494,16 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           <TestTube className="h-3 w-3 mr-1" />
           Test Frame
         </Button>
+        {onOpen && (
+          <Button
+            onClick={onOpen}
+            variant="outline"
+            size="sm"
+            className="px-3"
+          >
+            Open Room
+          </Button>
+        )}
         {frameTestResult && (
           <span className="text-xs text-muted-foreground px-2 py-1 rounded bg-muted">
             {frameTestResult}
