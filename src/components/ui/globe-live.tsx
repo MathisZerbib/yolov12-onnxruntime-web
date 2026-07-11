@@ -111,6 +111,7 @@ export function GlobeLive({
     let animationId = 0
     let phi = 0
     let timeoutId: number | undefined
+    let disposed = false
 
     function init() {
       const width = canvas.offsetWidth
@@ -130,8 +131,9 @@ export function GlobeLive({
         arcWidth: 0.5, arcHeight: 0.25, opacity: 0.7,
       })
       function animate() {
+        if (disposed || !globe) return
         if (!isPausedRef.current) phi += hoveredRef.current ? speed * 0.6 : speed
-        globe!.update({
+        globe.update({
           phi: phi + phiOffsetRef.current + dragOffset.current.phi,
           theta: 0.2 + thetaOffsetRef.current + dragOffset.current.theta,
         })
@@ -155,6 +157,7 @@ export function GlobeLive({
       ro.observe(canvas)
 
       return () => {
+        disposed = true
         ro.disconnect()
         if (timeoutId) window.clearTimeout(timeoutId)
         if (animationId) cancelAnimationFrame(animationId)
@@ -163,6 +166,7 @@ export function GlobeLive({
     }
 
     return () => {
+      disposed = true
       if (timeoutId) window.clearTimeout(timeoutId)
       if (animationId) cancelAnimationFrame(animationId)
       if (globe) globe.destroy()

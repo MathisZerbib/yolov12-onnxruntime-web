@@ -82,6 +82,42 @@ This project is configured for GitHub Pages deployment. The GitHub Actions workf
 
 **Built with React, Vite, ONNX Runtime Web, and YOLOv12**
 
+## Wallet authentication and contracts
+
+Crossflow connects Rabby, MetaMask, Phantom EVM, and WalletConnect-compatible wallets through RainbowKit/Wagmi. The configured chain is Arbitrum Sepolia (`421614`). Connecting a wallet does not authenticate a session: the user must also sign the server-issued EIP-4361 message.
+
+Run the frontend and authentication Worker in separate terminals:
+
+```bash
+npm run db:migrate:local
+npm run dev:api
+npm run dev
+```
+
+The Worker uses D1 for single-use nonces, sessions, and inference manifests. Before deployment, create a real D1 database, replace the placeholder `database_id` in `wrangler.jsonc`, set the production `APP_ORIGIN`, apply migrations remotely, and deploy. Never place the explorer API key in a `VITE_` variable.
+
+Compile the contract with:
+
+```bash
+npm run contract:compile
+```
+
+Deploy `TrafficPredictionMarket` through a hardware/browser wallet or audited multisig workflow, passing separate admin, oracle, and market-operator addresses. Then configure `VITE_MARKET_CONTRACT_ADDRESS` and `VITE_ACTIVE_MARKET_ID`. The UI will not enable payable bets while either value is missing.
+
+Use the Arbiscan/Etherscan API key only after deployment for source verification on chain `421614`. It is intentionally excluded from the browser bundle and source control.
+
+The application never asks for a seed phrase, private key, backup file, or remote-control access. A legitimate Crossflow signature always states that it authenticates a session and does not authorize a transaction or transfer.
+
+## Room coordination and proof boundary
+
+Each room is a separate SQLite-backed Durable Object. An authenticated operator acquires a two-minute lease before inference starts. The coordinator rejects a second operator, expires abandoned leases with an alarm, and requires the lease token when accepting the final manifest. Because room IDs map to independent objects, Tokyo traffic does not serialize Paris traffic and capacity scales by room rather than through one global lock.
+
+The proof manifest commits to the approved model hash, execution provider, input dimensions, room, time window, and final count. This makes evidence tampering detectable. It does **not** prove that an untrusted browser showed an authentic camera stream. Production settlement still requires independently captured source-segment hashes, threshold oracle attestations, or a verifiable-compute/TEE system. Never describe a single browser detector as trustless.
+
+Contract results follow `Open → Proposed → Challenged/Finalized → Resolved`. A proposal has a 15-minute bonded challenge period. Payout claims remain unavailable until finalization. The dispute role must be independent from the room operator and oracle.
+
+Inference timing is measured in the worker across preprocessing, ONNX execution, and post-processing. The room HUD displays the actual total latency and selected provider. Validate the desktop, mobile, and WASM targets on a device matrix; model size, quantization, browser, memory, and input dimensions all materially affect the result.
+
 ## 🙏 Credits & Inspiration
 
 - **Inspired by:** [Hyuto / yolov8-onnxruntime-web](https://github.com/Hyuto/yolov8-onnxruntime-web)  

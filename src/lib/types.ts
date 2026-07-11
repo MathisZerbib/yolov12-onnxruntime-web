@@ -13,12 +13,15 @@ export interface DetectionStats {
   lastDetectionTime: number;
   classCounts: Record<string, number>;
 }
+export interface InferencePerformance { preprocessMs: number; inferenceMs: number; postprocessMs: number; totalMs: number; provider: 'webgpu' | 'wasm'; inputSize: [number, number]; }
 
 export interface ModelMetadata {
   inputSize: [number, number];
   classes: string[];
   confidenceThreshold: number;
   nmsThreshold: number;
+  sha256?: string;
+  executionProvider?: 'webgpu' | 'wasm';
 }
 
 export interface TrafficstreamSettings {

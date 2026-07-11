@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "crossflow-auth",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "vars": {
+    "APP_ORIGIN": "http://localhost:5173",
+    "ENVIRONMENT": "development",
+    "APPROVED_MODEL_SHA256": "a708b431b48e98647c5d469699b57809a0048de1d81bfe77e1b809c070b11be0"
+  },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "crossflow-auth",
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "migrations_dir": "worker/migrations"
+  }],
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "RoomCoordinator" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomCoordinator"] }]
+}

@@ -1,6 +1,6 @@
 # Crossflow market contract
 
-`TrafficPredictionMarket.sol` is a pari-mutuel ETH market. User stakes form the entire payout pool, so the protocol never promises uncollateralized fixed odds.
+`TrafficPredictionMarket.sol` is a pari-mutuel ETH market. User stakes form the entire payout pool, so the protocol never promises uncollateralized fixed odds. Oracle results are proposed, remain challengeable for 15 minutes with a fixed bond, and become claimable only after finalization.
 
 ## Resolution model
 
@@ -19,6 +19,6 @@ This priority is necessary because “Exact” otherwise overlaps “Range”. T
 
 - Compile against OpenZeppelin Contracts 5.x and Solidity 0.8.24.
 - Put the default admin behind a multisig; the contract enforces a two-day admin transfer delay.
-- Give `ORACLE_ROLE` to a threshold signer/automation contract, not a browser wallet.
+- Give `ORACLE_ROLE` to a threshold signer/automation contract, not a browser wallet, and `DISPUTE_ROLE` to an independent multisig or arbitration module.
 - Add tests and an independent audit before mainnet deployment.
 - A production oracle should aggregate multiple independent detector attestations and expose a dispute window. This first contract intentionally does not pretend that browser inference is trustless.

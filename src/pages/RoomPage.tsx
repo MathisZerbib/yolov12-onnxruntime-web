@@ -4,8 +4,13 @@ import Hls from 'hls.js';
 import { ROOMS } from '@/lib/globe-markers';
 import { BET_TYPES, GAME_CONFIG } from '@/config/game-config';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, Play, Square, Loader2, Radio, ShieldCheck, Wallet, Crosshair, Volume2 } from 'lucide-react';
-import { ObjectDetector } from '@/lib/object-detector';
+import { ArrowLeft, Play, Square, Loader2, Radio, ShieldCheck, Crosshair, Volume2 } from 'lucide-react';
+import { WalletButton } from '@/components/wallet-button';
+import { PlacePositionButton } from '@/components/place-position-button';
+import { publishInferenceManifest } from '@/lib/inference-manifest';
+import { AUTH_API_URL } from '@/lib/wagmi';
+import { ChallengeTimeline } from '@/components/challenge-timeline';
+import { getSharedDetector, ObjectDetector } from '@/lib/object-detector';
 import { DetectionOverlay } from '@/components/detection-overlay';
 import { Detection } from '@/lib/types';
 import { TrafficCounter } from '@/lib/traffic-counter';
@@ -24,6 +29,8 @@ export default function RoomPage() {
   const animRef = useRef<number>(null);
   const processingRef = useRef(false);
   const detectorRef = useRef<ObjectDetector | null>(null);
+  const roundStartedAtRef = useRef<Date | null>(null);
+  const roomLeaseRef = useRef<string | null>(null);
 
   const [isReady, setIsReady] = useState(false);
   const [count, setCount] = useState(0);
@@ -34,6 +41,8 @@ export default function RoomPage() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [ethAmount, setEthAmount] = useState<number>(GAME_CONFIG.BETTING.MIN_ETH);
   const [synchronizedFrameReady, setSynchronizedFrameReady] = useState(false);
+  const [roomLeaseError, setRoomLeaseError] = useState('');
+  const [inferenceMs, setInferenceMs] = useState<number | null>(null);
 
   useEffect(() => {
     if (!room) return;
@@ -69,13 +78,9 @@ export default function RoomPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const detector = new ObjectDetector();
-    detector.initialize()
-      .then(() => {
-        if (cancelled) {
-          detector.dispose();
-          return;
-        }
+    getSharedDetector()
+      .then((detector) => {
+        if (cancelled) return;
         detectorRef.current = detector;
         if (detector.getMetadata()) {
           counterRef.current.setClassNames(detector.getMetadata()!.classes);
@@ -90,10 +95,7 @@ export default function RoomPage() {
       });
     return () => {
       cancelled = true;
-      if (detectorRef.current) {
-        detectorRef.current.dispose();
-        detectorRef.current = null;
-      }
+      detectorRef.current = null;
     };
   }, []);
 
@@ -114,6 +116,7 @@ export default function RoomPage() {
         ctx.drawImage(video, 0, 0, w, h);
         try {
           const newDetections = await detector.detectCanvas(frame);
+          setInferenceMs(detector.getLastPerformance()?.totalMs ?? null);
           counterRef.current.update(newDetections, w, h);
           setCount(counterRef.current.getTotalCount());
           drawSynchronizedFrame(synchronized, frame, newDetections, w, h);
@@ -171,23 +174,42 @@ export default function RoomPage() {
 
   const startProcessing = useCallback(async () => {
     const detector = detectorRef.current;
-    if (!detector || !detector.isReady()) return;
+    if (!detector || !detector.isReady() || !roomId) return;
+    setRoomLeaseError('');
+    let lease: { leaseToken: string };
+    try {
+      const leaseResponse = await fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'POST', credentials: 'include' });
+      if (!leaseResponse.ok) { setRoomLeaseError(leaseResponse.status === 409 ? 'This room already has an active detector.' : 'Sign in to operate this room.'); return; }
+      lease = await leaseResponse.json() as { leaseToken: string };
+    } catch {
+      setRoomLeaseError('The room service is offline. Run npm run dev to start web and API.');
+      return;
+    }
+    roomLeaseRef.current = lease.leaseToken;
     processingRef.current = true;
+    roundStartedAtRef.current = new Date();
     setSynchronizedFrameReady(false);
     setProcessing(true);
     loop(detector);
-  }, [loop]);
+  }, [loop, roomId]);
 
   const stopProcessing = useCallback(() => {
     processingRef.current = false;
     setProcessing(false);
     setSynchronizedFrameReady(false);
     setDetections([]);
+    const metadata = detectorRef.current?.getMetadata();
+    const leaseToken = roomLeaseRef.current;
+    if (roomId && leaseToken && roundStartedAtRef.current && metadata) void publishInferenceManifest(roomId, leaseToken, roundStartedAtRef.current, counterRef.current.getTotalCount(), metadata)
+      .catch((error) => console.warn('[inference-manifest]', error))
+      .finally(() => fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'DELETE', credentials: 'include', headers: { 'x-room-lease': leaseToken } }));
+    roomLeaseRef.current = null;
+    roundStartedAtRef.current = null;
     if (animRef.current) {
       cancelAnimationFrame(animRef.current);
       animRef.current = null;
     }
-  }, []);
+  }, [roomId]);
 
   if (!room) {
     return (
@@ -207,7 +229,7 @@ export default function RoomPage() {
       <header className="room-nav">
         <button className="room-back" onClick={() => navigate('/traffic')}><ArrowLeft /> Markets</button>
         <button className="brand-lockup" onClick={() => navigate('/')}><span className="brand-mark"><span /></span><span>CROSSFLOW</span></button>
-        <button className="wallet-button"><Wallet /> Connect</button>
+        <WalletButton />
       </header>
       <div className="room-workspace">
         <section className="broadcast-stage">
@@ -246,10 +268,11 @@ export default function RoomPage() {
 
         <div className="vision-hud">
           <span><Crosshair /> YOLOV12 / 640PX</span>
-          <span className={processing ? 'active' : ''}><i /> {processing ? 'DETECTING' : 'STANDBY'}</span>
+          <span className={processing ? 'active' : ''}><i /> {processing ? `DETECTING${inferenceMs ? ` / ${Math.round(inferenceMs)}MS` : ''}` : 'STANDBY'}</span>
         </div>
         <div className="count-hud"><small>VEHICLES CROSSED</small><strong>{String(count).padStart(2, '0')}</strong><span>current round</span></div>
         {isReady && detectorReady && <button className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : 'Start live detection'}</button>}
+        {roomLeaseError && <div className="room-lease-error">{roomLeaseError}</div>}
           </div>
           <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>Line at 75% frame height</span><span>CONFIDENCE ≥ 50%</span></footer>
         </section>
@@ -260,7 +283,8 @@ export default function RoomPage() {
           <div className="ticket-block"><label>Choose outcome</label><div className="room-outcomes">{BET_TYPES.map((type) => <button key={type.id} className={selectedType === type.id ? 'active' : ''} onClick={() => setSelectedType(type.id)}><span>{type.name}<small>{type.description}</small></span><b>{type.multDisplay}</b></button>)}</div></div>
           <div className="ticket-block"><div className="ticket-label"><label>Stake</label><span>Balance 2.481 ETH</span></div><div className="ticket-amount"><input type="number" min={GAME_CONFIG.BETTING.MIN_ETH} max={GAME_CONFIG.BETTING.MAX_ETH} step="0.001" value={ethAmount} onChange={(e) => setEthAmount(Number(e.target.value))}/><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1,5).map((p) => <button key={p} onClick={() => setEthAmount(p)}>{p}</button>)}</div></div>
           <div className="ticket-summary"><div><span>Your call</span><b>{selectedBet.name}</b></div><div><span>Potential payout</span><b>{(ethAmount * selectedBet.mult).toFixed(3)} ETH</b></div></div>
-          <button className="place-position">Connect wallet to bet</button>
+          <PlacePositionButton outcome={selectedType} amount={ethAmount} />
+          <ChallengeTimeline />
           <p className="ticket-fineprint"><ShieldCheck /> Settlement secured on {GAME_CONFIG.NETWORK.NAME}</p>
         </aside>
       </div>

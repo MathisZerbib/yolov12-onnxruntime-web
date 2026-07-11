@@ -2,9 +2,11 @@ import ScrollGlobe from '@/components/ui/scroll-globe';
 import { BET_TYPES, GAME_CONFIG } from '@/config/game-config';
 import { ROOMS } from '@/lib/globe-markers';
 import { getSharedDetector, ObjectDetector } from '@/lib/object-detector';
-import { ArrowUpRight, Check, ChevronRight, Crosshair, Radio, ShieldCheck, Wallet } from 'lucide-react';
+import { ArrowUpRight, Check, ChevronRight, Crosshair, Radio, ShieldCheck } from 'lucide-react';
+import { WalletButton } from '@/components/wallet-button';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 export default function LiveTrafficGame() {
   const navigate = useNavigate();
@@ -37,9 +39,9 @@ export default function LiveTrafficGame() {
           <span>CROSSFLOW</span>
         </button>
         <div className="nav-center" aria-label="Main navigation">
-          <button className="is-active">Markets</button><button>How it works</button><button>Activity</button>
+          <button className="is-active">Markets</button><Link to="/how-it-works">How it works</Link><Link to="/activity">Activity</Link><Link to="/leaderboard">Leaderboard</Link>
         </div>
-        <button className="wallet-button"><Wallet /> Connect wallet</button>
+        <WalletButton />
       </nav>
 
       <section className="market-hero">

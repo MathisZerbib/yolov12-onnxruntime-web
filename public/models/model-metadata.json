@@ -87,6 +87,7 @@
   ],
   "confidenceThreshold": 0.5,
   "nmsThreshold": 0.4,
+  "sha256": "a708b431b48e98647c5d469699b57809a0048de1d81bfe77e1b809c070b11be0",
   "modelName": "YOLOv12 Nano (General Object Detection)",
   "version": "12.0.0",
   "description": "YOLOv12 Nano is a lightweight, real-time object detection model optimized for edge devices. Converted to ONNX format for general object detection. Detects 80 common object classes from the COCO dataset with improved accuracy and efficiency over previous versions.",
