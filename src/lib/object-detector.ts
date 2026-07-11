@@ -76,6 +76,47 @@ export class ObjectDetector {
     }
   }
 
+  /** Fast video path: resize the captured canvas directly, avoiding a full-size
+   * getImageData -> putImageData round trip before every inference. */
+  async detectCanvas(source: HTMLCanvasElement, minConfidence?: number): Promise<Detection[]> {
+    if (!this.session || !this.metadata || !this.isInitialized) throw new Error('Detector not initialized');
+    try {
+      const input = this.preprocessCanvas(source);
+      const results = await this.session.run({ [this.session.inputNames[0]]: input });
+      const output = results[this.session.outputNames[0]] as ort.Tensor;
+      return this.postprocessResults(output, source.width, source.height, minConfidence ?? this.metadata.confidenceThreshold);
+    } catch (error) {
+      console.error('Canvas detection failed:', error);
+      return [];
+    }
+  }
+
+  private preprocessCanvas(source: HTMLCanvasElement): ort.Tensor {
+    const [inputWidth, inputHeight] = this.metadata!.inputSize;
+    if (!this.preCanvas || this.preCanvas.width !== inputWidth || this.preCanvas.height !== inputHeight) {
+      this.preCanvas = document.createElement('canvas');
+      this.preCanvas.width = inputWidth;
+      this.preCanvas.height = inputHeight;
+      this.preCtx = this.preCanvas.getContext('2d', { willReadFrequently: true })!;
+    }
+    const ctx = this.preCtx!;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, inputWidth, inputHeight);
+    const scale = Math.min(inputWidth / source.width, inputHeight / source.height);
+    const drawWidth = source.width * scale;
+    const drawHeight = source.height * scale;
+    ctx.drawImage(source, (inputWidth - drawWidth) / 2, (inputHeight - drawHeight) / 2, drawWidth, drawHeight);
+    const pixels = ctx.getImageData(0, 0, inputWidth, inputHeight).data;
+    const plane = inputWidth * inputHeight;
+    const data = new Float32Array(plane * 3);
+    for (let pixel = 0, rgba = 0; pixel < plane; pixel++, rgba += 4) {
+      data[pixel] = pixels[rgba] / 255;
+      data[pixel + plane] = pixels[rgba + 1] / 255;
+      data[pixel + plane * 2] = pixels[rgba + 2] / 255;
+    }
+    return new ort.Tensor('float32', data, [1, 3, inputHeight, inputWidth]);
+  }
+
   private preprocessImage(imageData: ImageData): ort.Tensor {
     const [inputWidth, inputHeight] = this.metadata!.inputSize;
 
