@@ -7,7 +7,7 @@ import { activeMarketId, marketContractAddress, trafficMarketAbi } from '@/lib/m
 import { TransactionStatus, type TransactionState } from './transaction-status';
 
 export function PlacePositionButton({ outcome, amount }: { outcome: number; amount: number }) {
-  const { isConnected, chainId } = useAccount();
+  const { address, isConnected, chainId } = useAccount();
   const [error, setError] = useState('');
   const [hash, setHash] = useState<`0x${string}`>();
   const [txState, setTxState] = useState<TransactionState>();
@@ -18,7 +18,7 @@ export function PlacePositionButton({ outcome, amount }: { outcome: number; amou
   useEffect(() => {
     if (!hash || !publicClient) return;
     let cancelled = false;
-    setTxState('PENDING');
+    setTxState(current => current === 'REPLACED' ? 'REPLACED' : 'PENDING');
     publicClient.waitForTransactionReceipt({ hash, confirmations: 1, onReplaced: ({ transaction }) => {
       if (!cancelled) { setHash(transaction.hash); setTxState('REPLACED'); }
     }}).then((receipt) => { if (!cancelled) setTxState(receipt.status === 'success' ? 'CONFIRMED' : 'FAILED'); })
@@ -29,7 +29,8 @@ export function PlacePositionButton({ outcome, amount }: { outcome: number; amou
   async function place() {
     setError(''); setTxState('AWAITING_SIGNATURE');
     const session = await fetch(`${AUTH_API_URL}/auth/session`, { credentials: 'include' });
-    if (!session.ok) { setError('Sign in with your wallet first'); setTxState(undefined); return; }
+    const sessionData = session.ok ? await session.json() as { address?: string } : null;
+    if (!sessionData?.address || sessionData.address.toLowerCase() !== address?.toLowerCase()) { setError('Sign in with this wallet first'); setTxState(undefined); return; }
     if (!marketContractAddress || activeMarketId === 0n) { setError('Market contract is not configured'); setTxState(undefined); return; }
     try {
       const submittedHash = await writeContractAsync({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'bet', args: [activeMarketId, outcome + 1], value: parseEther(String(amount)), chainId: arbitrumSepolia.id });

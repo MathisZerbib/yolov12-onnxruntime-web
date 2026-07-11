@@ -133,26 +133,7 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
         hlsRef.current = null;
       }
     };
-  }, [config.url, onError, streamStatus]);
-
-  const startProcessing = useCallback(() => {
-    if (!detector.isReady()) {
-      setError('Model not ready yet');
-      return;
-    }
-    
-    isProcessingRef.current = true;
-    lastFrameTimeRef.current = 0;
-    runDetectionLoop();
-  }, [detector]);
-
-  const stopProcessing = useCallback(() => {
-    isProcessingRef.current = false;
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = null;
-    }
-  }, []);
+  }, [config.name, config.url, onError, streamStatus]);
 
   const drawDetections = useCallback((ctx: CanvasRenderingContext2D, detections: Detection[], width: number, height: number) => {
     ctx.clearRect(0, 0, width, height);
@@ -236,7 +217,7 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
           let imageData: ImageData;
           try {
             imageData = ctx.getImageData(0, 0, w, h);
-          } catch (e) {
+          } catch {
             const msg = `Cannot read video frames (CORS). Server must send Access-Control-Allow-Origin headers or use same-origin sources.`;
             setError(msg);
             setStreamStatus('error');
@@ -283,6 +264,24 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
     }
   }, [detector, videoSize, config.name, drawDetections]);
 
+  const startProcessing = useCallback(() => {
+    if (!detector.isReady()) {
+      setError('Model not ready yet');
+      return;
+    }
+    isProcessingRef.current = true;
+    lastFrameTimeRef.current = 0;
+    runDetectionLoop();
+  }, [detector, runDetectionLoop]);
+
+  const stopProcessing = useCallback(() => {
+    isProcessingRef.current = false;
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+  }, []);
+
   const testFrameCapture = useCallback(async () => {
     const video = videoRef.current;
     const frameCanvas = frameCanvasRef.current;
@@ -294,10 +293,7 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
 
     const waitForFrame = async (timeout = 3000): Promise<string> => {
       const start = performance.now();
-      let attempts = 0;
-      
       while (performance.now() - start < timeout) {
-        attempts++;
         const w = video.videoWidth || videoSize.width;
         const h = video.videoHeight || videoSize.height;
         
@@ -315,7 +311,7 @@ export function StreamTile({ config, detector, onError, isActive = false, onTogg
             const testData = ctx.getImageData(0, 0, w, h);
             const nonEmptyPixels = testData.data.filter((v, i) => i % 4 === 0 && v > 0).length;
             return `OK: ${w}x${h}, ${nonEmptyPixels} non-zero pixels`;
-          } catch (e) {
+          } catch {
             return 'BLOCKED: CORS/tainted canvas, getImageData() failed';
           }
         }

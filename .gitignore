@@ -50,6 +50,8 @@ next-env.d.ts
 # build output
 dist/
 .wrangler/
+/artifacts/
+/cache/
 
 # agents
 

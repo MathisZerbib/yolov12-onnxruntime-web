@@ -18,6 +18,8 @@ export default defineConfig({
     assetsDir: 'assets',
   },
   server: {
+    port: 5173,
+    strictPort: true,
     // En dev, on NE pose PAS COEP (require-corp) : cela bloquerait tous les flux
     // HLS cross-origin (ERR_BLOCKED_BY_RESPONSE.NotSameOriginAfterDefaultedToSameOriginByCoep)
     // puisque les serveurs de test n'envoient pas d'en-tête CORP/Cross-Origin-Resource-Policy.
@@ -37,4 +39,3 @@ export default defineConfig({
     },
   },
 });
-

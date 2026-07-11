@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useRef, useState, useEffect, useCallback } from 'react';
-import Hls from 'hls.js';
+import type Hls from 'hls.js';
 import { ROOMS } from '@/lib/globe-markers';
 import { BET_TYPES, GAME_CONFIG } from '@/config/game-config';
 import { Button } from '@/components/ui/button';
@@ -11,9 +11,9 @@ import { publishInferenceManifest } from '@/lib/inference-manifest';
 import { AUTH_API_URL } from '@/lib/wagmi';
 import { ChallengeTimeline } from '@/components/challenge-timeline';
 import { getSharedDetector, ObjectDetector } from '@/lib/object-detector';
-import { DetectionOverlay } from '@/components/detection-overlay';
 import { Detection } from '@/lib/types';
 import { TrafficCounter } from '@/lib/traffic-counter';
+import type { DetectionZone } from '@/config/detection-zone';
 
 export default function RoomPage() {
   const { roomId } = useParams();
@@ -29,8 +29,10 @@ export default function RoomPage() {
   const animRef = useRef<number>(null);
   const processingRef = useRef(false);
   const detectorRef = useRef<ObjectDetector | null>(null);
+  const lastUiUpdateRef = useRef(0);
   const roundStartedAtRef = useRef<Date | null>(null);
   const roomLeaseRef = useRef<string | null>(null);
+  const roundZoneRef = useRef<DetectionZone | null>(null);
 
   const [isReady, setIsReady] = useState(false);
   const [count, setCount] = useState(0);
@@ -38,16 +40,18 @@ export default function RoomPage() {
   const [selectedType, setSelectedType] = useState<number>(BET_TYPES[0].id);
   const [modelLoading, setModelLoading] = useState(true);
   const [detectorReady, setDetectorReady] = useState(false);
-  const [detections, setDetections] = useState<Detection[]>([]);
   const [ethAmount, setEthAmount] = useState<number>(GAME_CONFIG.BETTING.MIN_ETH);
   const [synchronizedFrameReady, setSynchronizedFrameReady] = useState(false);
   const [roomLeaseError, setRoomLeaseError] = useState('');
   const [inferenceMs, setInferenceMs] = useState<number | null>(null);
+  const [detectionZone, setDetectionZone] = useState<DetectionZone | null>(null);
+  const [zoneLoading, setZoneLoading] = useState(true);
 
   useEffect(() => {
     if (!room) return;
     const video = videoRef.current;
     if (!video) return;
+    let cancelled = false;
 
     setIsReady(false);
     if (hlsRef.current) {
@@ -55,26 +59,60 @@ export default function RoomPage() {
       hlsRef.current = null;
     }
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
-      hls.loadSource(room.streamUrl);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setIsReady(true);
-      });
-      hlsRef.current = hls;
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = room.streamUrl;
       video.addEventListener('loadedmetadata', () => setIsReady(true), { once: true });
+    } else {
+      void import('hls.js/light').then(({ default: HlsRuntime }) => {
+        if (cancelled || !HlsRuntime.isSupported()) return;
+        const hls = new HlsRuntime({ enableWorker: true, lowLatencyMode: false });
+        hls.loadSource(room.streamUrl);
+        hls.attachMedia(video);
+        hls.on(HlsRuntime.Events.MANIFEST_PARSED, () => { if (!cancelled) setIsReady(true); });
+        hlsRef.current = hls;
+      });
     }
 
     return () => {
+      cancelled = true;
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
     };
   }, [room]);
+
+  useEffect(() => {
+    if (!roomId) return;
+    const controller = new AbortController();
+    setZoneLoading(true);
+    setDetectionZone(null);
+    fetch(`${AUTH_API_URL}/rooms/${roomId}/zone`, { credentials: 'include', signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error(response.status === 404 ? 'This room needs an admin detection zone before it can operate.' : 'Detection-zone service unavailable.');
+        return response.json() as Promise<DetectionZone>;
+      })
+      .then(zone => {
+        setDetectionZone(zone);
+        counterRef.current.configure({
+          roiPts: [
+            { x: zone.x1Bps / 10_000, y: zone.y1Bps / 10_000 },
+            { x: zone.x1Bps / 10_000, y: zone.y2Bps / 10_000 },
+            { x: zone.x2Bps / 10_000, y: zone.y2Bps / 10_000 },
+            { x: zone.x2Bps / 10_000, y: zone.y1Bps / 10_000 },
+          ],
+          countingLineY: zone.countingLineYBps / 10_000,
+        });
+        setCount(0);
+        setRoomLeaseError('');
+      })
+      .catch(error => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        setRoomLeaseError(error instanceof Error ? error.message : 'Detection-zone service unavailable.');
+      })
+      .finally(() => { if (!controller.signal.aborted) setZoneLoading(false); });
+    return () => controller.abort();
+  }, [roomId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,21 +154,23 @@ export default function RoomPage() {
         ctx.drawImage(video, 0, 0, w, h);
         try {
           const newDetections = await detector.detectCanvas(frame);
-          setInferenceMs(detector.getLastPerformance()?.totalMs ?? null);
           counterRef.current.update(newDetections, w, h);
-          setCount(counterRef.current.getTotalCount());
+          const now = performance.now();
+          if (now - lastUiUpdateRef.current >= 250) {
+            lastUiUpdateRef.current = now;
+            setInferenceMs(detector.getLastPerformance()?.totalMs ?? null);
+            setCount(counterRef.current.getTotalCount());
+          }
           drawSynchronizedFrame(synchronized, frame, newDetections, w, h);
           setSynchronizedFrameReady(true);
-          // Never paint inference results over a newer <video> frame.
-          setDetections([]);
-          drawCountingLine(overlay, w, h);
-        } catch (_e) {
+          drawCountingZone(overlay, w, h, roundZoneRef.current ?? detectionZone);
+        } catch {
           // ignore
         }
       }
     }
     animRef.current = requestAnimationFrame(() => loop(detector));
-  }, []);
+  }, [detectionZone]);
 
   function drawSynchronizedFrame(canvas: HTMLCanvasElement, source: HTMLCanvasElement, frameDetections: Detection[], w: number, h: number) {
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
@@ -157,17 +197,28 @@ export default function RoomPage() {
     }
   }
 
-  function drawCountingLine(canvas: HTMLCanvasElement, w: number, h: number) {
+  function drawCountingZone(canvas: HTMLCanvasElement, w: number, h: number, zone: DetectionZone | null) {
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx || !zone) return;
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     ctx.clearRect(0, 0, w, h);
+    const x1 = zone.x1Bps / 10_000 * w;
+    const y1 = zone.y1Bps / 10_000 * h;
+    const x2 = zone.x2Bps / 10_000 * w;
+    const y2 = zone.y2Bps / 10_000 * h;
+    ctx.fillStyle = 'rgba(215, 255, 69, 0.045)';
+    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.strokeStyle = 'rgba(215, 255, 69, 0.7)';
+    ctx.lineWidth = Math.max(1, w * 0.0015);
+    ctx.setLineDash([Math.max(3, w * 0.006), Math.max(2, w * 0.004)]);
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     ctx.strokeStyle = '#EF4444';
     ctx.lineWidth = Math.max(1, w * 0.003);
-    const lineY = 0.75 * h;
+    const lineY = zone.countingLineYBps / 10_000 * h;
     ctx.setLineDash([Math.max(4, w * 0.01), Math.max(2, w * 0.005)]);
     ctx.beginPath();
-    ctx.moveTo(0, lineY);
-    ctx.lineTo(w, lineY);
+    ctx.moveTo(x1, lineY);
+    ctx.lineTo(x2, lineY);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -176,39 +227,66 @@ export default function RoomPage() {
     const detector = detectorRef.current;
     if (!detector || !detector.isReady() || !roomId) return;
     setRoomLeaseError('');
+    if (!detectionZone) {
+      setRoomLeaseError(zoneLoading ? 'Loading the admin detection zone…' : 'An admin detection zone is required before this room can operate.');
+      return;
+    }
     let lease: { leaseToken: string };
     try {
       const leaseResponse = await fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'POST', credentials: 'include' });
-      if (!leaseResponse.ok) { setRoomLeaseError(leaseResponse.status === 409 ? 'This room already has an active detector.' : 'Sign in to operate this room.'); return; }
+      if (!leaseResponse.ok) {
+        const failure = await leaseResponse.json().catch(() => null) as { error?: string } | null;
+        if (leaseResponse.status === 401) setRoomLeaseError('Your wallet session expired. Open the wallet widget and verify again.');
+        else if (leaseResponse.status === 409) setRoomLeaseError('This room already has an active detector. Try again when its lease ends.');
+        else setRoomLeaseError(failure?.error ? `Room service: ${failure.error}` : 'The room coordinator could not issue a lease.');
+        return;
+      }
       lease = await leaseResponse.json() as { leaseToken: string };
     } catch {
       setRoomLeaseError('The room service is offline. Run npm run dev to start web and API.');
       return;
     }
     roomLeaseRef.current = lease.leaseToken;
+    roundZoneRef.current = detectionZone;
+    counterRef.current.reset();
+    setCount(0);
     processingRef.current = true;
     roundStartedAtRef.current = new Date();
     setSynchronizedFrameReady(false);
     setProcessing(true);
     loop(detector);
-  }, [loop, roomId]);
+  }, [detectionZone, loop, roomId, zoneLoading]);
 
   const stopProcessing = useCallback(() => {
     processingRef.current = false;
     setProcessing(false);
     setSynchronizedFrameReady(false);
-    setDetections([]);
     const metadata = detectorRef.current?.getMetadata();
     const leaseToken = roomLeaseRef.current;
-    if (roomId && leaseToken && roundStartedAtRef.current && metadata) void publishInferenceManifest(roomId, leaseToken, roundStartedAtRef.current, counterRef.current.getTotalCount(), metadata)
-      .catch((error) => console.warn('[inference-manifest]', error))
-      .finally(() => fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'DELETE', credentials: 'include', headers: { 'x-room-lease': leaseToken } }));
+    if (roomId && leaseToken) {
+      const publication = roundStartedAtRef.current && metadata
+        && roundZoneRef.current
+        ? publishInferenceManifest(roomId, leaseToken, roundStartedAtRef.current, counterRef.current.getTotalCount(), metadata, roundZoneRef.current)
+        : Promise.resolve(null);
+      void publication
+        .catch((error) => console.warn('[inference-manifest]', error))
+        .finally(() => { void fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'DELETE', credentials: 'include', headers: { 'x-room-lease': leaseToken } }).catch(() => undefined); });
+    }
     roomLeaseRef.current = null;
     roundStartedAtRef.current = null;
+    roundZoneRef.current = null;
     if (animRef.current) {
       cancelAnimationFrame(animRef.current);
       animRef.current = null;
     }
+  }, [roomId]);
+
+  useEffect(() => () => {
+    processingRef.current = false;
+    if (animRef.current) cancelAnimationFrame(animRef.current);
+    const leaseToken = roomLeaseRef.current;
+    if (roomId && leaseToken) void fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'DELETE', credentials: 'include', headers: { 'x-room-lease': leaseToken } }).catch(() => undefined);
+    roomLeaseRef.current = null;
   }, [roomId]);
 
   if (!room) {
@@ -247,14 +325,6 @@ export default function RoomPage() {
         />
         <canvas ref={synchronizedRef} className={`room-video synchronized-video ${processing && synchronizedFrameReady ? 'is-visible' : ''}`} />
         <canvas ref={overlayRef} className="room-canvas" />
-        {isReady && detections.length > 0 && (
-          <DetectionOverlay
-            detections={detections}
-            videoWidth={videoRef.current?.videoWidth || 1280}
-            videoHeight={videoRef.current?.videoHeight || 720}
-            className="room-canvas"
-          />
-        )}
         <canvas ref={frameRef} className="hidden" aria-hidden="true" />
 
         {(!isReady || modelLoading) && (
@@ -268,20 +338,21 @@ export default function RoomPage() {
 
         <div className="vision-hud">
           <span><Crosshair /> YOLOV12 / 640PX</span>
+          {detectionZone && <span>ZONE V{detectionZone.version}</span>}
           <span className={processing ? 'active' : ''}><i /> {processing ? `DETECTING${inferenceMs ? ` / ${Math.round(inferenceMs)}MS` : ''}` : 'STANDBY'}</span>
         </div>
         <div className="count-hud"><small>VEHICLES CROSSED</small><strong>{String(count).padStart(2, '0')}</strong><span>current round</span></div>
-        {isReady && detectorReady && <button className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : 'Start live detection'}</button>}
-        {roomLeaseError && <div className="room-lease-error">{roomLeaseError}</div>}
+        {isReady && detectorReady && <button disabled={!detectionZone || zoneLoading} className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : zoneLoading ? 'Loading admin zone…' : 'Start live detection'}</button>}
+        {roomLeaseError && <div className="room-lease-error" role="alert">{roomLeaseError}</div>}
           </div>
-          <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>Line at 75% frame height</span><span>CONFIDENCE ≥ 50%</span></footer>
+          <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>{detectionZone ? `Admin zone v${detectionZone.version} · line at ${(detectionZone.countingLineYBps / 100).toFixed(1)}%` : 'Admin zone unavailable'}</span><span>CONFIDENCE ≥ 50%</span></footer>
         </section>
 
         <aside className="room-ticket">
           <div className="round-header"><div><span>ROUND #2841</span><b>Closes in 00:42</b></div><i>OPEN</i></div>
           <div className="ticket-title"><h1>How many vehicles cross the line?</h1><p>Resolved automatically when the 60-second detection window closes.</p></div>
           <div className="ticket-block"><label>Choose outcome</label><div className="room-outcomes">{BET_TYPES.map((type) => <button key={type.id} className={selectedType === type.id ? 'active' : ''} onClick={() => setSelectedType(type.id)}><span>{type.name}<small>{type.description}</small></span><b>{type.multDisplay}</b></button>)}</div></div>
-          <div className="ticket-block"><div className="ticket-label"><label>Stake</label><span>Balance 2.481 ETH</span></div><div className="ticket-amount"><input type="number" min={GAME_CONFIG.BETTING.MIN_ETH} max={GAME_CONFIG.BETTING.MAX_ETH} step="0.001" value={ethAmount} onChange={(e) => setEthAmount(Number(e.target.value))}/><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1,5).map((p) => <button key={p} onClick={() => setEthAmount(p)}>{p}</button>)}</div></div>
+          <div className="ticket-block"><div className="ticket-label"><label htmlFor="room-stake">Stake</label><span>Balance 2.481 ETH</span></div><div className="ticket-amount"><input id="room-stake" aria-label="ETH stake" type="number" min={GAME_CONFIG.BETTING.MIN_ETH} max={GAME_CONFIG.BETTING.MAX_ETH} step="0.001" value={ethAmount} onChange={(e) => setEthAmount(Number(e.target.value))}/><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1,5).map((p) => <button key={p} onClick={() => setEthAmount(p)}>{p}</button>)}</div></div>
           <div className="ticket-summary"><div><span>Your call</span><b>{selectedBet.name}</b></div><div><span>Potential payout</span><b>{(ethAmount * selectedBet.mult).toFixed(3)} ETH</b></div></div>
           <PlacePositionButton outcome={selectedType} amount={ethAmount} />
           <ChallengeTimeline />

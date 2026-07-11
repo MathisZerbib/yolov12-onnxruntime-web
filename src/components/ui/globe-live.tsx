@@ -109,9 +109,29 @@ export function GlobeLive({
     const canvas = canvasRef.current
     let globe: ReturnType<typeof createGlobe> | null = null
     let animationId = 0
+    let initAnimationId = 0
     let phi = 0
     let timeoutId: number | undefined
     let disposed = false
+
+    function destroyGlobe() {
+      if (initAnimationId) cancelAnimationFrame(initAnimationId)
+      if (animationId) cancelAnimationFrame(animationId)
+      const instance = globe
+      globe = null
+      instance?.destroy()
+
+      // Cobe leaves vertex attributes enabled after deleting their buffers.
+      // Reusing that WebGL context during React StrictMode/HMR then makes the
+      // next draw read a deleted buffer and spam INVALID_OPERATION.
+      const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl')
+      if (gl) {
+        const maxAttributes = gl.getParameter(gl.MAX_VERTEX_ATTRIBS) as number
+        for (let index = 0; index < maxAttributes; index += 1) gl.disableVertexAttribArray(index)
+        gl.bindBuffer(gl.ARRAY_BUFFER, null)
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null)
+      }
+    }
 
     function init() {
       const width = canvas.offsetWidth
@@ -146,7 +166,10 @@ export function GlobeLive({
     }
 
     if (canvas.offsetWidth > 0) {
-      init()
+      // The first development effect is intentionally cleaned up by React
+      // StrictMode. Deferring allocation avoids create/destroy/recreate on the
+      // same canvas and WebGL context in that probe cycle.
+      initAnimationId = requestAnimationFrame(init)
     } else {
       const ro = new ResizeObserver((entries) => {
         if (entries[0]?.contentRect.width > 0) {
@@ -160,16 +183,14 @@ export function GlobeLive({
         disposed = true
         ro.disconnect()
         if (timeoutId) window.clearTimeout(timeoutId)
-        if (animationId) cancelAnimationFrame(animationId)
-        if (globe) globe.destroy()
+        destroyGlobe()
       }
     }
 
     return () => {
       disposed = true
       if (timeoutId) window.clearTimeout(timeoutId)
-      if (animationId) cancelAnimationFrame(animationId)
-      if (globe) globe.destroy()
+      destroyGlobe()
     }
   }, [markers, speed])
 

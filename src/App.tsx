@@ -8,6 +8,7 @@ const ProfilePage = lazy(() => import('@/pages/ProfilePage'));
 const LeaderboardPage = lazy(() => import('@/pages/LeaderboardPage'));
 const HowItWorksPage = lazy(() => import('@/pages/HowItWorksPage'));
 const ActivityPage = lazy(() => import('@/pages/ActivityPage'));
+const AdminZonesPage = lazy(() => import('@/pages/AdminZonesPage'));
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
         <Route path="/leaderboard" element={<LeaderboardPage />} />
         <Route path="/how-it-works" element={<HowItWorksPage />} />
         <Route path="/activity" element={<ActivityPage />} />
+        <Route path="/admin/zones" element={<AdminZonesPage />} />
       </Routes></Suspense>
     </BrowserRouter>
   );

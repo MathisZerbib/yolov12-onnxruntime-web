@@ -12,7 +12,7 @@ export interface BrowserCheckResult {
  */
 export function checkWebGPU(): BrowserCheckResult {
   try {
-    if (!(navigator as any).gpu) {
+    if (!('gpu' in navigator)) {
       return {
         passed: false,
         message: 'WebGPU is not supported. Please use a modern browser like Chrome 113+, Edge 113+, or Firefox Nightly with WebGPU enabled.'

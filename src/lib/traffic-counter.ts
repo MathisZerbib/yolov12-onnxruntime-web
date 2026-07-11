@@ -56,6 +56,11 @@ export class TrafficCounter {
     this.config = { ...DEFAULT_TRAFFIC_CONFIG, ...config };
   }
 
+  configure(config: Partial<TrafficConfig>) {
+    this.config = { ...this.config, ...config };
+    this.reset();
+  }
+
   setClassNames(classNames: string[] | Record<number, string>) {
     this.vehicleClasses.clear();
     
@@ -79,10 +84,10 @@ export class TrafficCounter {
       const hasClass = this.config.vehicleClasses.some(vc => 
         cv.toLowerCase() === vc.toLowerCase() || cv.toLowerCase().includes(vc.toLowerCase())
       );
-      return hasClass;
+      const cx = d.x + d.width / 2;
+      const cy = d.y + d.height / 2;
+      return hasClass && this.isPointInRoi(cx, cy, width, height);
     });
-    
-    console.log(`[TrafficCounter] input=${detections.length} traffic=${vehicleDetections.length}`);
 
     // Compute centroids for detections
     const detCentroids = vehicleDetections.map(d => ({
@@ -138,20 +143,17 @@ export class TrafficCounter {
       }
     }
 
-    // Update matched tracks with exponential smoothing to reduce trailing
-    const smoothing = 0.4; // lower = more responsive, higher = smoother
+    // Keep count geometry on the current detection. Smoothing the centroid makes
+    // fast vehicles cross late, even when the rendered box is frame-synchronized.
     for (const match of matches.values()) {
       const track = activeTracks.get(match.trackId);
       if (track) {
         track.px = track.cx;
         track.py = track.cy;
-        // Smooth: interpolate between predicted and actual detection
-        const pred = predicted.get(match.trackId)!;
-        track.cx = pred.cx * smoothing + match.det.cx * (1 - smoothing);
-        track.cy = pred.cy * smoothing + match.det.cy * (1 - smoothing);
-        // Update velocity based on smoothed position
-        track.vx = (track.cx - track.px) / dt;
-        track.vy = (track.cy - track.py) / dt;
+        track.cx = match.det.cx;
+        track.cy = match.det.cy;
+        track.vx = track.vx * 0.25 + ((track.cx - track.px) / dt) * 0.75;
+        track.vy = track.vy * 0.25 + ((track.cy - track.py) / dt) * 0.75;
         track.lastSeen = now;
         track.confidence = match.det.detection.confidence;
         track.width = match.det.detection.width;
@@ -189,12 +191,10 @@ export class TrafficCounter {
 
     // Check line crossings using previous y
     const lineY = this.config.countingLineY * height;
-    const threshold = Math.max(height * 0.04, 15);
-    
     for (const track of activeTracks.values()) {
       if (track.crossed) continue;
-      
-      if (track.py < lineY - threshold && track.cy >= lineY - threshold) {
+
+      if (track.py < lineY && track.cy >= lineY) {
         track.crossed = true;
         this.totalCount++;
       }

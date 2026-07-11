@@ -15,7 +15,6 @@ export default function LiveTrafficGame() {
   const [modelLoading, setModelLoading] = useState(true);
   const [selectedRoomId, setSelectedRoomId] = useState(ROOMS[0].id);
   const [betTypeId, setBetTypeId] = useState<number>(BET_TYPES[0].id);
-  const [targetCount, setTargetCount] = useState(12);
   const [ethAmount, setEthAmount] = useState<number>(GAME_CONFIG.BETTING.MIN_ETH);
 
   useEffect(() => {
@@ -89,8 +88,8 @@ export default function LiveTrafficGame() {
           </div>
 
           <div className="builder-step wager-step">
-            <div className="field-row"><label>Target vehicles</label><input type="number" min="0" value={targetCount} onChange={(e) => setTargetCount(Math.max(0, Number(e.target.value)))} /></div>
-            <div className="field-row"><label>Stake</label><div className="eth-input"><input aria-label="ETH wager" type="number" step="0.001" value={ethAmount} onChange={(e) => setEthAmount(Math.min(10, Math.max(.001, Number(e.target.value))))} /><span>ETH</span></div></div>
+            <div className="market-line"><span>Market line</span><b>Set by the active round</b><small>Immutable once betting opens</small></div>
+            <div className="field-row"><label htmlFor="market-stake">Stake</label><div className="eth-input"><input id="market-stake" aria-label="ETH wager" type="number" step="0.001" value={ethAmount} onChange={(e) => setEthAmount(Math.min(10, Math.max(.001, Number(e.target.value))))} /><span>ETH</span></div></div>
             <div className="quick-stakes">{[.01, .05, .1, .5].map((p) => <button key={p} onClick={() => setEthAmount(p)}>{p}</button>)}</div>
           </div>
 

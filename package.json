@@ -3,13 +3,22 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
+  "overrides": {
+    "tmp": "0.2.7"
+  },
   "scripts": {
     "dev": "concurrently --kill-others --names web,api \"vite\" \"wrangler dev --port 8787\"",
     "dev:web": "vite",
     "dev:api": "wrangler dev --port 8787",
     "db:migrate:local": "wrangler d1 migrations apply crossflow-auth --local",
     "worker:check": "wrangler deploy --dry-run --outdir /tmp/crossflow-worker",
+    "worker:types": "wrangler types worker-configuration.d.ts --include-runtime false",
+    "worker:types:check": "wrangler types worker-configuration.d.ts --include-runtime false --check",
+    "worker:typecheck": "tsc -p tsconfig.worker.json",
     "contract:compile": "solcjs --base-path . --include-path node_modules --optimize --bin --abi contracts/TrafficPredictionMarket.sol -o /tmp/crossflow-solc",
+    "contract:artifact": "node scripts/build-contract-artifact.mjs",
+    "contract:test": "hardhat test solidity",
+    "check": "npm run lint && npm run worker:types:check && npm run worker:typecheck && npm run contract:test && npm run contract:artifact && npm run build && npm run worker:check && npm run contract:compile && npm audit --omit=dev",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint"
@@ -39,22 +48,24 @@
     "wagmi": "^3.7.1"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260711.1",
     "@eslint/js": "^9.39.4",
     "@openzeppelin/contracts": "^5.6.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@vitejs/plugin-react": "^4.3.3",
+    "@vitejs/plugin-react": "^6.0.3",
     "concurrently": "^10.0.3",
     "eslint": "^9",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
-    "solc": "^0.8.36",
+    "hardhat": "^3.9.1",
+    "solc": "0.8.24",
     "tailwindcss": "^4",
     "typescript": "^5",
     "typescript-eslint": "^8.49.0",
-    "vite": "^5.4.11",
+    "vite": "^8.1.4",
     "wrangler": "^4.110.0"
   }
 }
