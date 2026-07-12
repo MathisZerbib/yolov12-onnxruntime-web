@@ -6,7 +6,7 @@ export const trafficMarketAbi = [
   { type: 'function', name: 'latestMarketIdByRoom', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [{ name: '', type: 'uint256' }] },
   { type: 'function', name: 'roleAccount', stateMutability: 'view', inputs: [{ name: 'role', type: 'bytes32' }], outputs: [{ name: '', type: 'address' }] },
   { type: 'function', name: 'outcomePools', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'outcome', type: 'uint8' }], outputs: [{ name: '', type: 'uint256' }] },
-  { type: 'function', name: 'getMarket', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [
+  { type: 'function', name: 'getMarket', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [{ type: 'tuple', components: [
     { name: 'roomId', type: 'bytes32' }, { name: 'closeTime', type: 'uint64' }, { name: 'resolveDeadline', type: 'uint64' },
     { name: 'claimDeadline', type: 'uint64' }, { name: 'challengeDeadline', type: 'uint64' }, { name: 'disputeDeadline', type: 'uint64' },
     { name: 'lowerBound', type: 'uint32' }, { name: 'upperBound', type: 'uint32' }, { name: 'exactTarget', type: 'uint32' },
@@ -14,7 +14,7 @@ export const trafficMarketAbi = [
     { name: 'winner', type: 'uint8' }, { name: 'status', type: 'uint8' }, { name: 'evidenceHash', type: 'bytes32' },
     { name: 'zoneConfigHash', type: 'bytes32' }, { name: 'challengerEvidenceHash', type: 'bytes32' },
     { name: 'challenger', type: 'address' }, { name: 'totalPool', type: 'uint256' }, { name: 'winningPool', type: 'uint256' },
-  ] },
+  ] }] },
   { type: 'function', name: 'createMarket', stateMutability: 'nonpayable', inputs: [
     { name: 'roomId', type: 'bytes32' }, { name: 'closeTime', type: 'uint64' }, { name: 'resolveDeadline', type: 'uint64' },
     { name: 'lowerBound', type: 'uint32' }, { name: 'upperBound', type: 'uint32' }, { name: 'exactTarget', type: 'uint32' },
@@ -32,6 +32,16 @@ export const trafficMarketAbi = [
   ], outputs: [] },
   { type: 'function', name: 'isMarketBettable', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }] },
   { type: 'function', name: 'protocolFees', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'bet', stateMutability: 'payable', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'outcome', type: 'uint8' }], outputs: [] },
+  { type: 'function', name: 'pause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'unpause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'rotateOperationalRole', stateMutability: 'nonpayable', inputs: [{ name: 'role', type: 'bytes32' }, { name: 'newAccount', type: 'address' }], outputs: [] },
+  { type: 'function', name: 'rotateAllOperationalRoles', stateMutability: 'nonpayable', inputs: [{ name: 'oracle', type: 'address' }, { name: 'marketOperator', type: 'address' }, { name: 'disputeResolver', type: 'address' }], outputs: [] },
+  { type: 'error', name: 'InvalidMarket', inputs: [] },
+  { type: 'error', name: 'InvalidConfiguration', inputs: [] },
+  { type: 'error', name: 'MarketClosed', inputs: [] },
+  { type: 'error', name: 'InvalidStake', inputs: [] },
+  { type: 'error', name: 'ActiveMarketExists', inputs: [{ name: 'marketId', type: 'uint256' }] },
 ] as const;
 export const DEFAULT_TESTNET_MARKET_ADDRESS = '0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139' as const;
 export const marketContractAddress = (import.meta.env.VITE_MARKET_CONTRACT_ADDRESS || DEFAULT_TESTNET_MARKET_ADDRESS) as `0x${string}`;

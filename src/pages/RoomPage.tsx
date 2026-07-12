@@ -16,6 +16,9 @@ import { TrafficCounter } from '@/lib/traffic-counter';
 import type { DetectionZone } from '@/config/detection-zone';
 import { useRoomMarket, type RoomMarketState } from '@/lib/room-market';
 import { formatEther, parseEther } from 'viem';
+import { DetectionScoreboard } from '@/components/detection-scoreboard';
+import { DetectionCountEffects, type DetectionCountRipple } from '@/components/detection-count-effects';
+import { LazyMotion, domAnimation } from 'motion/react';
 
 function formatCountdown(seconds: number): string {
   const safe = Math.max(0, seconds);
@@ -59,6 +62,7 @@ export default function RoomPage() {
   const roundStartedAtRef = useRef<Date | null>(null);
   const roomLeaseRef = useRef<string | null>(null);
   const roundZoneRef = useRef<DetectionZone | null>(null);
+  const rippleTimersRef = useRef<number[]>([]);
 
   const [isReady, setIsReady] = useState(false);
   const [count, setCount] = useState(0);
@@ -75,6 +79,8 @@ export default function RoomPage() {
   const [visibleVehicles, setVisibleVehicles] = useState(0);
   const [detectionZone, setDetectionZone] = useState<DetectionZone | null>(null);
   const [zoneLoading, setZoneLoading] = useState(true);
+  const [detectionSurface, setDetectionSurface] = useState({ width: 1280, height: 720 });
+  const [countRipples, setCountRipples] = useState<DetectionCountRipple[]>([]);
   const { market, loading: marketLoading, stale: marketStale, error: marketError, syncedAt, refresh: refreshMarket } = useRoomMarket(roomId);
 
   useEffect(() => {
@@ -212,11 +218,22 @@ export default function RoomPage() {
         try {
           const newDetections = await detector.detectCanvas(frame);
           setDetectionError('');
-          setVisibleVehicles(newDetections.length);
           counterRef.current.update(newDetections, w, h);
+          const countEvents = counterRef.current.consumeCountEvents();
+          if (countEvents.length > 0) {
+            setDetectionSurface(current => current.width === w && current.height === h ? current : { width: w, height: h });
+            const ripples = countEvents.map(event => ({ ...event, key: `${event.id}-${performance.now()}-${crypto.randomUUID()}` }));
+            setCountRipples(current => [...current, ...ripples].slice(-8));
+            setCount(counterRef.current.getTotalCount());
+            for (const ripple of ripples) {
+              const timer = window.setTimeout(() => setCountRipples(current => current.filter(item => item.key !== ripple.key)), 700);
+              rippleTimersRef.current.push(timer);
+            }
+          }
           const now = performance.now();
           if (now - lastUiUpdateRef.current >= 250) {
             lastUiUpdateRef.current = now;
+            setVisibleVehicles(newDetections.length);
             setInferenceMs(detector.getLastPerformance()?.totalMs ?? null);
             setCount(counterRef.current.getTotalCount());
           }
@@ -244,20 +261,73 @@ export default function RoomPage() {
     const fontSize = Math.max(13, w * 0.014);
     ctx.font = `700 ${fontSize}px ui-monospace, monospace`;
     ctx.textBaseline = 'top';
-    for (const detection of frameDetections) {
+    frameDetections.forEach((detection, index) => {
       const color = '#d7ff45';
+      const x = detection.x;
+      const y = detection.y;
+      const boxWidth = detection.width;
+      const boxHeight = detection.height;
+      const corner = Math.max(10, Math.min(boxWidth, boxHeight, w * 0.04) * 0.24);
+      const scanProgress = (performance.now() % 1_100) / 1_100;
+      const scanY = y + boxHeight * scanProgress;
+
+      ctx.save();
+      ctx.fillStyle = 'rgba(215, 255, 69, 0.035)';
+      ctx.fillRect(x, y, boxWidth, boxHeight);
+      ctx.strokeStyle = 'rgba(215, 255, 69, 0.34)';
+      ctx.lineWidth = Math.max(1, lineWidth * 0.42);
+      ctx.setLineDash([Math.max(4, lineWidth * 2), Math.max(4, lineWidth * 2.4)]);
+      ctx.strokeRect(x, y, boxWidth, boxHeight);
+      ctx.setLineDash([]);
+
       ctx.strokeStyle = color;
       ctx.lineWidth = lineWidth;
-      ctx.strokeRect(detection.x, detection.y, detection.width, detection.height);
-      const label = `CAR ${Math.round(detection.confidence * 100)}%`;
-      const labelWidth = ctx.measureText(label).width + 12;
-      const labelHeight = fontSize + 8;
-      const labelY = Math.max(0, detection.y - labelHeight);
+      ctx.lineCap = 'square';
+      ctx.shadowColor = 'rgba(215, 255, 69, 0.58)';
+      ctx.shadowBlur = Math.max(3, lineWidth * 2.2);
+      ctx.beginPath();
+      ctx.moveTo(x, y + corner); ctx.lineTo(x, y); ctx.lineTo(x + corner, y);
+      ctx.moveTo(x + boxWidth - corner, y); ctx.lineTo(x + boxWidth, y); ctx.lineTo(x + boxWidth, y + corner);
+      ctx.moveTo(x + boxWidth, y + boxHeight - corner); ctx.lineTo(x + boxWidth, y + boxHeight); ctx.lineTo(x + boxWidth - corner, y + boxHeight);
+      ctx.moveTo(x + corner, y + boxHeight); ctx.lineTo(x, y + boxHeight); ctx.lineTo(x, y + boxHeight - corner);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      ctx.strokeStyle = 'rgba(72, 255, 139, 0.46)';
+      ctx.lineWidth = Math.max(1, lineWidth * 0.35);
+      ctx.beginPath(); ctx.moveTo(x + 3, scanY); ctx.lineTo(x + boxWidth - 3, scanY); ctx.stroke();
+
+      const centerX = x + boxWidth / 2;
+      const centerY = y + boxHeight / 2;
+      const reticle = Math.max(4, lineWidth * 1.8);
+      ctx.strokeStyle = 'rgba(215, 255, 69, 0.78)';
+      ctx.beginPath();
+      ctx.moveTo(centerX - reticle, centerY); ctx.lineTo(centerX + reticle, centerY);
+      ctx.moveTo(centerX, centerY - reticle); ctx.lineTo(centerX, centerY + reticle);
+      ctx.stroke();
+
+      const label = `${detection.class.toUpperCase()}  ${Math.round(detection.confidence * 100)}%`;
+      const target = `TGT-${String(index + 1).padStart(2, '0')}`;
+      const labelWidth = ctx.measureText(label).width + 18;
+      const labelHeight = fontSize + 10;
+      const labelX = Math.min(Math.max(0, x), Math.max(0, w - labelWidth));
+      const labelY = y >= labelHeight + 4 ? y - labelHeight - 4 : Math.min(h - labelHeight, y + boxHeight + 4);
+      const notch = Math.min(8, labelHeight * 0.28);
       ctx.fillStyle = color;
-      ctx.fillRect(detection.x, labelY, labelWidth, labelHeight);
-      ctx.fillStyle = '#10110e';
-      ctx.fillText(label, detection.x + 6, labelY + 4);
-    }
+      ctx.beginPath();
+      ctx.moveTo(labelX, labelY); ctx.lineTo(labelX + labelWidth - notch, labelY); ctx.lineTo(labelX + labelWidth, labelY + notch);
+      ctx.lineTo(labelX + labelWidth, labelY + labelHeight); ctx.lineTo(labelX + notch, labelY + labelHeight); ctx.lineTo(labelX, labelY + labelHeight - notch);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#10130c';
+      ctx.fillText(label, labelX + 9, labelY + 5);
+      ctx.font = `800 ${Math.max(9, fontSize * 0.68)}px ui-monospace, monospace`;
+      const targetWidth = ctx.measureText(target).width + 10;
+      ctx.fillStyle = 'rgba(15, 20, 11, 0.88)';
+      ctx.fillRect(Math.max(0, x + boxWidth - targetWidth), Math.max(0, y + boxHeight - fontSize), targetWidth, fontSize);
+      ctx.fillStyle = color;
+      ctx.fillText(target, Math.max(4, x + boxWidth - targetWidth + 5), Math.max(0, y + boxHeight - fontSize + 2));
+      ctx.restore();
+    });
   }
 
   function drawCountingZone(canvas: HTMLCanvasElement, w: number, h: number, zone: DetectionZone | null) {
@@ -324,6 +394,9 @@ export default function RoomPage() {
     setSynchronizedFrameReady(false);
     setDetectionError('');
     setVisibleVehicles(0);
+    for (const timer of rippleTimersRef.current) window.clearTimeout(timer);
+    rippleTimersRef.current = [];
+    setCountRipples([]);
     setProcessing(true);
     const video = videoRef.current;
     const overlay = overlayRef.current;
@@ -335,6 +408,9 @@ export default function RoomPage() {
     processingRef.current = false;
     setProcessing(false);
     setSynchronizedFrameReady(false);
+    for (const timer of rippleTimersRef.current) window.clearTimeout(timer);
+    rippleTimersRef.current = [];
+    setCountRipples([]);
     const metadata = detectorRef.current?.getMetadata();
     const leaseToken = roomLeaseRef.current;
     if (roomId && leaseToken) {
@@ -361,6 +437,8 @@ export default function RoomPage() {
     const leaseToken = roomLeaseRef.current;
     if (roomId && leaseToken) void fetch(`${AUTH_API_URL}/rooms/${roomId}/lease`, { method: 'DELETE', credentials: 'include', headers: { 'x-room-lease': leaseToken } }).catch(() => undefined);
     roomLeaseRef.current = null;
+    for (const timer of rippleTimersRef.current) window.clearTimeout(timer);
+    rippleTimersRef.current = [];
   }, [roomId]);
 
   if (!room) {
@@ -393,6 +471,7 @@ export default function RoomPage() {
   };
 
   return (
+    <LazyMotion features={domAnimation} strict>
     <main className="room-shell">
       <header className="room-nav">
         <button className="room-back" onClick={() => navigate('/traffic')}><ArrowLeft /> Markets</button>
@@ -416,6 +495,7 @@ export default function RoomPage() {
         />
         <canvas ref={synchronizedRef} className={`room-video synchronized-video ${processing && synchronizedFrameReady ? 'is-visible' : ''}`} />
         <canvas ref={overlayRef} className={`room-canvas zone-overlay ${processing ? 'is-active' : ''}`} aria-label="Configured vehicle counting zone" />
+        <DetectionCountEffects width={detectionSurface.width} height={detectionSurface.height} ripples={countRipples} />
         <canvas ref={frameRef} className="hidden" aria-hidden="true" />
 
         {(!isReady || modelLoading) && (
@@ -432,7 +512,7 @@ export default function RoomPage() {
           {detectionZone && <span>ZONE V{detectionZone.version}</span>}
           <span className={processing ? 'active' : ''}><i /> {processing ? `DETECTING · ${visibleVehicles} IN FRAME${inferenceMs ? ` / ${Math.round(inferenceMs)}MS` : ''}` : 'STANDBY'}</span>
         </div>
-        <div className="count-hud"><small>VEHICLES CROSSED</small><strong>{String(count).padStart(2, '0')}</strong><span>current round</span></div>
+        <DetectionScoreboard count={count} visibleVehicles={visibleVehicles} processing={processing} roundId={market?.marketId} />
         {isReady && detectorReady && <button disabled={!detectionZone || zoneLoading} className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : zoneLoading ? 'Loading admin zone…' : 'Start live detection'}</button>}
         {roomLeaseError && <div className="room-lease-error" role="alert">{roomLeaseError}</div>}
         {detectionError && <div className="room-lease-error" role="alert">Detection stopped: {detectionError}</div>}
@@ -453,5 +533,6 @@ export default function RoomPage() {
         </aside>
       </div>
     </main>
+    </LazyMotion>
   );
 }

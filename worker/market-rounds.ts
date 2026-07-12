@@ -6,6 +6,7 @@ import {
   http,
   isAddress,
   keccak256,
+  parseAbiItem,
   toBytes,
   type Hex,
 } from 'viem';
@@ -14,7 +15,12 @@ import { arbitrumSepolia } from 'viem/chains';
 
 const MARKET_ROLE = keccak256(toBytes('MARKET_ROLE'));
 const RETRY_DELAY_MS = 30_000;
+const CONFIG_RETRY_DELAY_MS = 120_000;
 const UINT32_MAX = 4_294_967_295;
+const AUTOMATION_REGISTRY_SELECTOR = 'a70502d5';
+const MARKET_CREATED_EVENT = parseAbiItem('event MarketCreated(uint256 indexed marketId, bytes32 indexed roomId, uint64 closeTime, uint32 lowerBound, uint32 upperBound, uint32 exactTarget, uint32 zoneVersion, bytes32 zoneConfigHash)');
+
+class SchedulerConfigurationError extends Error {}
 
 // ABI from the deployed contract artifact, with named tuple outputs preserved
 const trafficMarketAbi = [
@@ -37,8 +43,14 @@ const trafficMarketAbi = [
   ], outputs: [{ name: '', type: 'uint256' }] },
   { type: 'function', name: 'nextMarketId', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
   { type: 'function', name: 'roomZones', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [
-    { name: '', type: 'uint16[8]' }, { name: 'version', type: 'uint32' }, { name: 'configHash', type: 'bytes32' }
+    { name: 'topLeftXBps', type: 'uint16' }, { name: 'topLeftYBps', type: 'uint16' },
+    { name: 'topRightXBps', type: 'uint16' }, { name: 'topRightYBps', type: 'uint16' },
+    { name: 'bottomRightXBps', type: 'uint16' }, { name: 'bottomRightYBps', type: 'uint16' },
+    { name: 'bottomLeftXBps', type: 'uint16' }, { name: 'bottomLeftYBps', type: 'uint16' },
+    { name: 'version', type: 'uint32' }, { name: 'configHash', type: 'bytes32' },
   ] },
+  { type: 'error', name: 'InvalidConfiguration', inputs: [] },
+  { type: 'error', name: 'ActiveMarketExists', inputs: [{ name: 'marketId', type: 'uint256' }] },
 ] as const;
 
 interface MarketConfig {
@@ -96,6 +108,7 @@ export interface RoomMarketState {
   nextRoundExpectedAt: number | null;
   staleAfter: number;
   error?: string;
+  retryable?: boolean;
 }
 
 function boundedInteger(value: string, name: string, minimum: number, maximum: number): number {
@@ -139,6 +152,40 @@ function phaseFor(status: number, closeTime: number, nowSeconds: number): Player
   return 'unavailable';
 }
 
+async function inspectAutomationContract(
+  publicClient: ReturnType<typeof createPublicClient>,
+  contractAddress: `0x${string}`,
+): Promise<{ hasRoomRegistry: boolean }> {
+  const code = await publicClient.getCode({ address: contractAddress });
+  if (!code || code === '0x') throw new SchedulerConfigurationError(`No contract is deployed at ${contractAddress}`);
+  return { hasRoomRegistry: code.toLowerCase().includes(AUTOMATION_REGISTRY_SELECTOR) };
+}
+
+async function findLatestMarketId(
+  publicClient: ReturnType<typeof createPublicClient>,
+  contractAddress: `0x${string}`,
+  roomKey: Hex,
+  hasRoomRegistry: boolean,
+): Promise<bigint> {
+  if (hasRoomRegistry) {
+    return publicClient.readContract({ address: contractAddress, abi: trafficMarketAbi, functionName: 'latestMarketIdByRoom', args: [roomKey] });
+  }
+
+  // Older deployments did not store a per-room pointer. MarketCreated has both
+  // values indexed, so it is a canonical and inexpensive compatibility index.
+  const logs = await publicClient.getLogs({
+    address: contractAddress,
+    event: MARKET_CREATED_EVENT,
+    args: { roomId: roomKey },
+    fromBlock: 0n,
+    toBlock: 'latest',
+  });
+  return logs.reduce((latest, log) => {
+    const marketId = log.args.marketId ?? 0n;
+    return marketId > latest ? marketId : latest;
+  }, 0n);
+}
+
 export async function readRoomMarketState(env: Env, roomId: string): Promise<RoomMarketState> {
   const serverTime = Math.floor(Date.now() / 1_000);
   const roomKey = keccak256(toBytes(roomId));
@@ -151,6 +198,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
       resolveDeadline: null, lowerBound: null, upperBound: null, exactTarget: null, feeBps: null, totalPoolWei: '0',
       outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: null, staleAfter: serverTime + 10,
       error: error instanceof Error ? error.message : 'Market automation is unavailable',
+      retryable: false,
     };
   }
   const enabled = config.enabledRooms.includes(roomId);
@@ -158,16 +206,19 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
     roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
     lowerBound: null, upperBound: null, exactTarget: null, feeBps: null, totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'],
     nextRoundExpectedAt: null, staleAfter: serverTime + 10, error: 'Continuous rounds are not enabled for this room yet',
+    retryable: false,
   };
 
   try {
     const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
-    const marketId = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'latestMarketIdByRoom', args: [roomKey] });
+    const capabilities = await inspectAutomationContract(publicClient, config.contractAddress);
+    const marketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
     if (marketId === 0n) return {
       roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
       lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
       totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: serverTime + 30, staleAfter: serverTime + 10,
       error: 'Preparing the first round',
+      retryable: true,
     };
     const [marketResult, underPool, rangePool, overPool, exactPool] = await Promise.all([
       publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [marketId] }),
@@ -196,12 +247,13 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'unknown';
-    console.error(JSON.stringify({ event: 'market_state_read_failed', roomId, roomKey, contractAddress: config.contractAddress, error: errorMessage, stack: error instanceof Error ? error.stack : undefined }));
+    const configurationError = error instanceof SchedulerConfigurationError;
+    if (!configurationError) console.error(JSON.stringify({ event: 'market_state_read_failed', roomId, roomKey, contractAddress: config.contractAddress, error: errorMessage }));
     return {
       roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
       lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
       totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: serverTime + 30, staleAfter: serverTime + 10,
-      error: 'Could not synchronize this room with Arbitrum Sepolia',
+      error: configurationError ? errorMessage : 'Could not synchronize this room with Arbitrum Sepolia', retryable: !configurationError,
     };
   }
 }
@@ -235,6 +287,16 @@ export class MarketScheduler extends DurableObject<Env> {
       return { checked: 0, created: 0, errors: 1 };
     }
 
+    const capabilityClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
+    try {
+      await inspectAutomationContract(capabilityClient, config.contractAddress);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Contract capability check failed';
+      console.warn(JSON.stringify({ event: 'market_scheduler_blocked', contractAddress: config.contractAddress, error: message }));
+      await this.ctx.storage.deleteAlarm();
+      return { checked: 0, created: 0, errors: 1 };
+    }
+
     let created = 0;
     let errors = 0;
     let nextAlarm = Number.POSITIVE_INFINITY;
@@ -248,7 +310,7 @@ export class MarketScheduler extends DurableObject<Env> {
         const message = error instanceof Error ? error.message : 'Unknown scheduler error';
         this.record(roomId, null, null, null, message);
         console.error(JSON.stringify({ event: 'market_round_reconcile_failed', roomId, error: message }));
-        nextAlarm = Math.min(nextAlarm, Date.now() + RETRY_DELAY_MS);
+        nextAlarm = Math.min(nextAlarm, Date.now() + (error instanceof SchedulerConfigurationError ? CONFIG_RETRY_DELAY_MS : RETRY_DELAY_MS));
       }
     }
     if (Number.isFinite(nextAlarm)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, nextAlarm));
@@ -261,10 +323,9 @@ export class MarketScheduler extends DurableObject<Env> {
     const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 10_000, retryCount: 2 }) });
     const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 10_000, retryCount: 2 }) });
     const roomKey = keccak256(toBytes(roomId));
+    const capabilities = await inspectAutomationContract(publicClient, config.contractAddress);
 
     let authorizedOperator: Hex;
-    let latestMarketId: bigint;
-
     // First verify contract connectivity with a simpler call
     let nextMarketId: bigint;
     try {
@@ -298,11 +359,16 @@ export class MarketScheduler extends DurableObject<Env> {
     }
     if (authorizedOperator.toLowerCase() !== account.address.toLowerCase()) throw new Error(`Configured MARKET_ROLE is ${authorizedOperator}, not the automation signer ${account.address}`);
 
-    let latestMarketId: bigint = 0n;
-    if (nextMarketId > 1n) {
-      const candidateId = nextMarketId - 1n;
+    const roomZone = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'roomZones', args: [roomKey] });
+    const zoneVersion = Number(roomZone[8]);
+    if (zoneVersion === 0) {
+      throw new SchedulerConfigurationError(`On-chain detection zone is missing for ${roomId}. Publish the saved zone from /admin/zones before enabling automated rounds.`);
+    }
+
+    let latestMarketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
+    if (latestMarketId > 0n) {
       try {
-        const marketTuple = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [candidateId] }) as readonly [
+        const marketTuple = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [latestMarketId] }) as readonly [
           `0x${string}`, bigint, bigint, bigint, bigint, bigint,
           number, number, number, number, number, number, number,
           number, `0x${string}`, `0x${string}`, `0x${string}`, `0x${string}`,
@@ -310,7 +376,6 @@ export class MarketScheduler extends DurableObject<Env> {
         ];
         const roomKeyFromMarket = marketTuple[0] as `0x${string}`;
         if (roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase()) {
-          latestMarketId = candidateId;
           const closeTime = Number(marketTuple[1]);
           const status = marketTuple[13] as number;
           if (status === 1 && closeTime > Math.floor(Date.now() / 1_000)) {
@@ -319,7 +384,8 @@ export class MarketScheduler extends DurableObject<Env> {
           }
         }
       } catch {
-        // Candidate market does not belong to this room or does not exist; continue to create.
+        // A stale compatibility log must not prevent the next round.
+        latestMarketId = 0n;
       }
     }
 
@@ -330,7 +396,7 @@ export class MarketScheduler extends DurableObject<Env> {
       try {
         const receipt = await publicClient.getTransactionReceipt({ hash: pending.tx_hash as Hex });
         if (receipt.status === 'success') {
-          const confirmedId = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'latestMarketIdByRoom', args: [roomKey] });
+          const confirmedId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
           if (confirmedId !== 0n) {
             this.record(roomId, confirmedId.toString(), pending.close_time, pending.tx_hash, null);
             return { created: false, marketId: confirmedId.toString(), closeTime: pending.close_time };
@@ -379,7 +445,7 @@ export class MarketScheduler extends DurableObject<Env> {
       }));
       throw new Error(`Market creation reverted: ${txHash}`);
     }
-    const marketId = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'latestMarketIdByRoom', args: [roomKey] });
+    const marketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
     if (marketId === 0n) {
       console.error(JSON.stringify({
         event: 'market_pointer_not_updated',

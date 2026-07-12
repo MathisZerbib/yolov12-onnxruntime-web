@@ -10,7 +10,7 @@
     "ENVIRONMENT": "development",
     "APPROVED_MODEL_SHA256": "a708b431b48e98647c5d469699b57809a0048de1d81bfe77e1b809c070b11be0",
     "MARKET_RPC_URL": "https://sepolia-rollup.arbitrum.io/rpc",
-    "MARKET_CONTRACT_ADDRESS": "0xc65cab7f6df3a6c4725ec058b73fde0b038c3909",
+    "MARKET_CONTRACT_ADDRESS": "0x1b7b024f40f48ae95d948d4e7c13ba4e64126edd",
     "AUTO_MARKET_ROOMS": "tokyo,sydney,sf,paris,nyc,london",
     "MARKET_BETTING_WINDOW_SECONDS": "300",
     "MARKET_RESOLUTION_WINDOW_SECONDS": "600",

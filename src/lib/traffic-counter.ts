@@ -26,7 +26,7 @@ const DEFAULT_TRAFFIC_CONFIG: TrafficConfig = {
   ],
 };
 
-interface TrackEntry {
+export interface TrackEntry {
   id: number;
   cx: number;
   cy: number;
@@ -45,6 +45,15 @@ interface TrackEntry {
   counted: boolean;
 }
 
+export interface VehicleCountEvent {
+  id: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  className: string;
+}
+
 export class TrafficCounter {
   private tracks = new Map<number, TrackEntry>();
   private nextId = 0;
@@ -52,6 +61,7 @@ export class TrafficCounter {
   private config: TrafficConfig;
   private totalCount = 0;
   private frameCount = 0;
+  private countEvents: VehicleCountEvent[] = [];
 
   constructor(config: Partial<TrafficConfig> = {}) {
     this.config = { ...DEFAULT_TRAFFIC_CONFIG, ...config };
@@ -163,6 +173,14 @@ export class TrafficCounter {
           if (!inside && track.insideZone && track.enteredZone) {
             track.counted = true;
             this.totalCount++;
+            this.countEvents.push({
+              id: track.id,
+              x: Math.max(0, track.cx - track.width / 2),
+              y: Math.max(0, track.cy - track.height / 2),
+              width: track.width,
+              height: track.height,
+              className: track.className,
+            });
           }
           if (!inside && !track.enteredZone) track.seenOutside = true;
         }
@@ -223,6 +241,10 @@ export class TrafficCounter {
     return this.totalCount;
   }
 
+  consumeCountEvents(): VehicleCountEvent[] {
+    return this.countEvents.splice(0);
+  }
+
   getConfig(): TrafficConfig {
     return this.config;
   }
@@ -258,5 +280,6 @@ export class TrafficCounter {
     this.nextId = 0;
     this.totalCount = 0;
     this.frameCount = 0;
+    this.countEvents = [];
   }
 }

@@ -241,7 +241,7 @@ export default {
       const roomMarket = url.pathname.match(/^\/rooms\/([a-z0-9-]{1,64})\/market$/);
       if (roomMarket && request.method === 'GET') {
         const state = await readRoomMarketState(env, roomMarket[1]);
-        if (state.enabled && state.phase !== 'open') {
+        if (state.enabled && state.phase !== 'open' && state.retryable !== false) {
           ctx.waitUntil(env.MARKET_SCHEDULER.getByName('market-operator').reconcile());
         }
         return json(state, 200, cors);
