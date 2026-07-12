@@ -2,10 +2,17 @@ export const trafficMarketAbi = [
   { type: 'function', name: 'bet', stateMutability: 'payable', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'outcome', type: 'uint8' }], outputs: [] },
   { type: 'function', name: 'setRoomZone', stateMutability: 'nonpayable', inputs: [
     { name: 'roomId', type: 'bytes32' },
-    { name: 'x1Bps', type: 'uint16' }, { name: 'y1Bps', type: 'uint16' },
-    { name: 'x2Bps', type: 'uint16' }, { name: 'y2Bps', type: 'uint16' },
-    { name: 'countingLineYBps', type: 'uint16' },
+    { name: 'geometry', type: 'uint16[8]' },
   ], outputs: [] },
+  { type: 'function', name: 'paused', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+  { type: 'function', name: 'nextMarketId', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'protocolFees', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'roleAccount', stateMutability: 'view', inputs: [{ name: 'role', type: 'bytes32' }], outputs: [{ type: 'address' }] },
+  { type: 'function', name: 'pause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'unpause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'rotateOperationalRole', stateMutability: 'nonpayable', inputs: [{ name: 'role', type: 'bytes32' }, { name: 'newAccount', type: 'address' }], outputs: [] },
+  { type: 'function', name: 'rotateAllOperationalRoles', stateMutability: 'nonpayable', inputs: [{ name: 'oracle', type: 'address' }, { name: 'marketOperator', type: 'address' }, { name: 'disputeResolver', type: 'address' }], outputs: [] },
 ] as const;
-export const marketContractAddress = import.meta.env.VITE_MARKET_CONTRACT_ADDRESS as `0x${string}` | undefined;
+export const DEFAULT_TESTNET_MARKET_ADDRESS = '0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139' as const;
+export const marketContractAddress = (import.meta.env.VITE_MARKET_CONTRACT_ADDRESS || DEFAULT_TESTNET_MARKET_ADDRESS) as `0x${string}`;
 export const activeMarketId = BigInt(import.meta.env.VITE_ACTIVE_MARKET_ID ?? '0');

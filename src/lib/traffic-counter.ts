@@ -14,7 +14,6 @@ export interface Point {
 export interface TrafficConfig {
   vehicleClasses: string[];
   roiPts: Point[];
-  countingLineY: number;
 }
 
 const DEFAULT_TRAFFIC_CONFIG: TrafficConfig = {
@@ -25,7 +24,6 @@ const DEFAULT_TRAFFIC_CONFIG: TrafficConfig = {
     { x: 1, y: 1 },
     { x: 1, y: 0.25 },
   ],
-  countingLineY: 0.5,
 };
 
 interface TrackEntry {
@@ -41,7 +39,10 @@ interface TrackEntry {
   width: number;
   height: number;
   lastSeen: number;
-  crossed: boolean;
+  insideZone: boolean;
+  seenOutside: boolean;
+  enteredZone: boolean;
+  counted: boolean;
 }
 
 export class TrafficCounter {
@@ -84,9 +85,7 @@ export class TrafficCounter {
       const hasClass = this.config.vehicleClasses.some(vc => 
         cv.toLowerCase() === vc.toLowerCase() || cv.toLowerCase().includes(vc.toLowerCase())
       );
-      const cx = d.x + d.width / 2;
-      const cy = d.y + d.height / 2;
-      return hasClass && this.isPointInRoi(cx, cy, width, height);
+      return hasClass;
     });
 
     // Compute centroids for detections
@@ -158,6 +157,16 @@ export class TrafficCounter {
         track.confidence = match.det.detection.confidence;
         track.width = match.det.detection.width;
         track.height = match.det.detection.height;
+        const inside = this.isPointInRoi(track.cx, track.cy, width, height);
+        if (!track.counted) {
+          if (inside && !track.insideZone && track.seenOutside) track.enteredZone = true;
+          if (!inside && track.insideZone && track.enteredZone) {
+            track.counted = true;
+            this.totalCount++;
+          }
+          if (!inside && !track.enteredZone) track.seenOutside = true;
+        }
+        track.insideZone = inside;
       }
     }
 
@@ -169,6 +178,7 @@ export class TrafficCounter {
       );
       
       if (!isMatched) {
+      const startsInside = this.isPointInRoi(det.cx, det.cy, width, height);
       const newTrack: TrackEntry = {
         id: this.nextId++,
         cx: det.cx,
@@ -182,21 +192,13 @@ export class TrafficCounter {
         width: det.detection.width,
         height: det.detection.height,
         lastSeen: now,
-        crossed: false,
+        insideZone: startsInside,
+        seenOutside: !startsInside,
+        enteredZone: false,
+        counted: false,
       };
         activeTracks.set(newTrack.id, newTrack);
         this.tracks.set(newTrack.id, newTrack);
-      }
-    }
-
-    // Check line crossings using previous y
-    const lineY = this.config.countingLineY * height;
-    for (const track of activeTracks.values()) {
-      if (track.crossed) continue;
-
-      if (track.py < lineY && track.cy >= lineY) {
-        track.crossed = true;
-        this.totalCount++;
       }
     }
 

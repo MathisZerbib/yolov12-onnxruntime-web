@@ -78,7 +78,7 @@ export function WalletButton() {
       </div>
       {chainId !== arbitrumSepolia.id ? <button className="account-primary" onClick={() => switchChainAsync({ chainId: arbitrumSepolia.id })}><RefreshCw /> Switch network</button> : authState !== 'authenticated' && <button className="account-primary" disabled={authState === 'signing'} onClick={() => authenticate(address)}><ShieldCheck /> {authState === 'error' ? 'Try authentication again' : authState === 'offline' ? 'Check service again' : 'Verify wallet session'}</button>}
       <div className="wallet-quick-actions"><button onClick={async () => { await navigator.clipboard.writeText(address); setCopied(true); window.setTimeout(() => setCopied(false), 1200); }}>{copied ? <Check /> : <Copy />}<span>{copied ? 'Copied' : 'Copy address'}</span></button><a href={`https://sepolia.arbiscan.io/address/${address}`} target="_blank" rel="noreferrer"><ExternalLink /><span>Explorer</span></a></div>
-      <nav><Link to="/profile" onClick={() => setAccountOpen(false)}><UserRound /> Profile</Link><Link to="/activity" onClick={() => setAccountOpen(false)}><RefreshCw /> Activity</Link>{isPlatformAdmin(address) && <Link to="/admin/zones" onClick={() => setAccountOpen(false)}><LockKeyhole /> Zone control</Link>}</nav>
+      <nav><Link to="/profile" onClick={() => setAccountOpen(false)}><UserRound /> Profile</Link><Link to="/activity" onClick={() => setAccountOpen(false)}><RefreshCw /> Activity</Link>{isPlatformAdmin(address) && <Link to="/admin" onClick={() => setAccountOpen(false)}><LockKeyhole /> Admin console</Link>}</nav>
       <button className="wallet-disconnect" onClick={signOut}><LogOut /> Disconnect wallet</button>
     </section>}
 

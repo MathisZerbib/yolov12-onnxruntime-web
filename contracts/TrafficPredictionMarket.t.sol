@@ -37,28 +37,53 @@ contract TrafficPredictionMarketTest {
     }
 
     function testOnlyFixedAdminCanSetZone() public {
-        try market.setRoomZone(TOKYO, 0, 2_500, 10_000, 10_000, 7_500) {
+        try market.setRoomZone(TOKYO, _geometry()) {
             revert("unauthorized zone update accepted");
         } catch {}
 
         vm.prank(ADMIN);
-        market.setRoomZone(TOKYO, 0, 2_500, 10_000, 10_000, 7_500);
-        (uint16 x1, uint16 y1, uint16 x2, uint16 y2, uint16 line, uint32 version, bytes32 configHash) = market.roomZones(TOKYO);
-        require(x1 == 0 && y1 == 2_500 && x2 == 10_000 && y2 == 10_000 && line == 7_500, "zone coordinates differ");
+        market.setRoomZone(TOKYO, _geometry());
+        (uint16 tlx, uint16 tly, uint16 trx, uint16 try_, uint16 brx, uint16 bry, uint16 blx, uint16 bly, uint32 version, bytes32 configHash) = market.roomZones(TOKYO);
+        require(tlx == 1_000 && tly == 2_500 && trx == 9_000 && try_ == 2_500 && brx == 10_000 && bry == 10_000 && blx == 0 && bly == 10_000, "zone coordinates differ");
         require(version == 1, "first zone version is not one");
-        require(configHash == keccak256(abi.encode(TOKYO, x1, y1, x2, y2, line)), "zone hash differs");
+        require(configHash == keccak256(abi.encode(TOKYO, _geometry())), "zone hash differs");
+    }
+
+    function testAdminAtomicallyRotatesOperationalRole() public {
+        address nextOracle = address(0x4001);
+        bytes32 oracleRole = market.ORACLE_ROLE();
+        bytes32 marketRole = market.MARKET_ROLE();
+        vm.prank(ADMIN);
+        market.rotateOperationalRole(oracleRole, nextOracle);
+        require(market.roleAccount(oracleRole) == nextOracle, "role account not updated");
+        require(market.hasRole(oracleRole, nextOracle), "new oracle lacks role");
+        require(!market.hasRole(oracleRole, ORACLE), "old oracle retained role");
+
+        vm.prank(ALICE);
+        try market.rotateOperationalRole(marketRole, address(0x4002)) { revert("non-admin rotated role"); } catch {}
+        vm.prank(ADMIN);
+        try market.rotateOperationalRole(marketRole, nextOracle) { revert("overlapping role accepted"); } catch {}
+    }
+
+    function testAdminRotatesAllOperationalRolesInOneCall() public {
+        address nextOracle = address(0x5001);
+        address nextMarket = address(0x5002);
+        address nextDispute = address(0x5003);
+        vm.prank(ADMIN);
+        market.rotateAllOperationalRoles(nextOracle, nextMarket, nextDispute);
+        require(market.roleAccount(market.ORACLE_ROLE()) == nextOracle, "oracle not rotated");
+        require(market.roleAccount(market.MARKET_ROLE()) == nextMarket, "market role not rotated");
+        require(market.roleAccount(market.DISPUTE_ROLE()) == nextDispute, "dispute role not rotated");
     }
 
     function testInvalidZoneGeometryReverts() public {
         vm.prank(ADMIN);
-        try market.setRoomZone(TOKYO, 5_000, 2_500, 5_000, 10_000, 7_500) {
+        uint16[8] memory zeroWidth = _geometry();
+        zeroWidth[0] = zeroWidth[2];
+        try market.setRoomZone(TOKYO, zeroWidth) {
             revert("zero-width zone accepted");
         } catch {}
 
-        vm.prank(ADMIN);
-        try market.setRoomZone(TOKYO, 0, 2_500, 10_000, 10_000, 2_000) {
-            revert("line outside zone accepted");
-        } catch {}
     }
 
     function testMarketRequiresZoneAndSnapshotsIt() public {
@@ -68,24 +93,28 @@ contract TrafficPredictionMarketTest {
             revert("market without zone accepted");
         } catch {}
 
-        bytes32 firstHash = _setTokyoZone(7_500);
+        bytes32 firstHash = _setTokyoZone();
         vm.prank(MARKET_OPERATOR);
         uint256 marketId = market.createMarket(TOKYO, closeTime, closeTime + 1 days, 5, 10, 7, 250);
         TrafficPredictionMarket.Market memory created = market.getMarket(marketId);
         require(created.zoneVersion == 1, "zone version not snapshotted");
         require(created.zoneConfigHash == firstHash, "zone hash not snapshotted");
 
-        _setTokyoZone(8_000);
+        _setTokyoZone();
         TrafficPredictionMarket.Market memory unchanged = market.getMarket(marketId);
         require(unchanged.zoneVersion == 1 && unchanged.zoneConfigHash == firstHash, "open market zone mutated");
     }
 
     function testOracleCannotResolveWithChangedZone() public {
-        bytes32 firstHash = _setTokyoZone(7_500);
+        bytes32 firstHash = _setTokyoZone();
         uint64 closeTime = uint64(block.timestamp + 60);
         vm.prank(MARKET_OPERATOR);
         uint256 marketId = market.createMarket(TOKYO, closeTime, closeTime + 1 days, 5, 10, 7, 250);
-        bytes32 changedHash = _setTokyoZone(8_000);
+        uint16[8] memory changedGeometry = _geometry();
+        changedGeometry[0] = 1_200;
+        vm.prank(ADMIN);
+        market.setRoomZone(TOKYO, changedGeometry);
+        (,,,,,,,,, bytes32 changedHash) = market.roomZones(TOKYO);
         bytes32 evidenceHash = keccak256("manifest-v2");
         vm.warp(closeTime);
 
@@ -205,15 +234,19 @@ contract TrafficPredictionMarketTest {
         require(market.challengeRefunds(CHALLENGER) == bond, "successful challenger bond not accrued");
     }
 
-    function _setTokyoZone(uint16 line) private returns (bytes32) {
+    function _setTokyoZone() private returns (bytes32) {
         vm.prank(ADMIN);
-        market.setRoomZone(TOKYO, 0, 2_500, 10_000, 10_000, line);
-        (,,,,,, bytes32 configHash) = market.roomZones(TOKYO);
+        market.setRoomZone(TOKYO, _geometry());
+        (,,,,,,,,, bytes32 configHash) = market.roomZones(TOKYO);
         return configHash;
     }
 
+    function _geometry() private pure returns (uint16[8] memory geometry) {
+        geometry = [uint16(1_000), 2_500, 9_000, 2_500, 10_000, 10_000, 0, 10_000];
+    }
+
     function _createTokyoMarket(uint64 closeTime, uint16 feeBps) private returns (uint256) {
-        _setTokyoZone(7_500);
+        _setTokyoZone();
         vm.prank(MARKET_OPERATOR);
         return market.createMarket(TOKYO, closeTime, closeTime + 1 days, 5, 10, 7, feeBps);
     }

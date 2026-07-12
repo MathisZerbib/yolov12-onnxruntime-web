@@ -96,12 +96,11 @@ export default function RoomPage() {
         setDetectionZone(zone);
         counterRef.current.configure({
           roiPts: [
-            { x: zone.x1Bps / 10_000, y: zone.y1Bps / 10_000 },
-            { x: zone.x1Bps / 10_000, y: zone.y2Bps / 10_000 },
-            { x: zone.x2Bps / 10_000, y: zone.y2Bps / 10_000 },
-            { x: zone.x2Bps / 10_000, y: zone.y1Bps / 10_000 },
+            { x: zone.topLeftXBps / 10_000, y: zone.topLeftYBps / 10_000 },
+            { x: zone.topRightXBps / 10_000, y: zone.topRightYBps / 10_000 },
+            { x: zone.bottomRightXBps / 10_000, y: zone.bottomRightYBps / 10_000 },
+            { x: zone.bottomLeftXBps / 10_000, y: zone.bottomLeftYBps / 10_000 },
           ],
-          countingLineY: zone.countingLineYBps / 10_000,
         });
         setCount(0);
         setRoomLeaseError('');
@@ -113,6 +112,29 @@ export default function RoomPage() {
       .finally(() => { if (!controller.signal.aborted) setZoneLoading(false); });
     return () => controller.abort();
   }, [roomId]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = overlayRef.current;
+    if (!video || !canvas || !detectionZone) return;
+    const draw = () => {
+      const w = video.videoWidth || 1280;
+      const h = video.videoHeight || 720;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      ctx.clearRect(0, 0, w, h);
+      const points = [
+        [detectionZone.topLeftXBps / 10_000 * w, detectionZone.topLeftYBps / 10_000 * h],
+        [detectionZone.topRightXBps / 10_000 * w, detectionZone.topRightYBps / 10_000 * h],
+        [detectionZone.bottomRightXBps / 10_000 * w, detectionZone.bottomRightYBps / 10_000 * h],
+        [detectionZone.bottomLeftXBps / 10_000 * w, detectionZone.bottomLeftYBps / 10_000 * h],
+      ];
+      ctx.fillStyle = 'rgba(76, 255, 128, 0.09)'; ctx.strokeStyle = 'rgba(76, 255, 128, 0.92)'; ctx.lineWidth = Math.max(1, w * 0.0015);
+      ctx.beginPath(); ctx.moveTo(points[0][0], points[0][1]); for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]); ctx.closePath(); ctx.fill(); ctx.stroke();
+    };
+    draw(); video.addEventListener('loadedmetadata', draw); return () => video.removeEventListener('loadedmetadata', draw);
+  }, [detectionZone]);
 
   useEffect(() => {
     let cancelled = false;
@@ -202,23 +224,19 @@ export default function RoomPage() {
     if (!ctx || !zone) return;
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
     ctx.clearRect(0, 0, w, h);
-    const x1 = zone.x1Bps / 10_000 * w;
-    const y1 = zone.y1Bps / 10_000 * h;
-    const x2 = zone.x2Bps / 10_000 * w;
-    const y2 = zone.y2Bps / 10_000 * h;
+    const points = [
+      [zone.topLeftXBps / 10_000 * w, zone.topLeftYBps / 10_000 * h],
+      [zone.topRightXBps / 10_000 * w, zone.topRightYBps / 10_000 * h],
+      [zone.bottomRightXBps / 10_000 * w, zone.bottomRightYBps / 10_000 * h],
+      [zone.bottomLeftXBps / 10_000 * w, zone.bottomLeftYBps / 10_000 * h],
+    ] as const;
     ctx.fillStyle = 'rgba(215, 255, 69, 0.045)';
-    ctx.fillRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.beginPath(); ctx.moveTo(points[0][0], points[0][1]);
+    for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]);
+    ctx.closePath(); ctx.fill();
     ctx.strokeStyle = 'rgba(215, 255, 69, 0.7)';
     ctx.lineWidth = Math.max(1, w * 0.0015);
     ctx.setLineDash([Math.max(3, w * 0.006), Math.max(2, w * 0.004)]);
-    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-    ctx.strokeStyle = '#EF4444';
-    ctx.lineWidth = Math.max(1, w * 0.003);
-    const lineY = zone.countingLineYBps / 10_000 * h;
-    ctx.setLineDash([Math.max(4, w * 0.01), Math.max(2, w * 0.005)]);
-    ctx.beginPath();
-    ctx.moveTo(x1, lineY);
-    ctx.lineTo(x2, lineY);
     ctx.stroke();
     ctx.setLineDash([]);
   }
@@ -345,7 +363,7 @@ export default function RoomPage() {
         {isReady && detectorReady && <button disabled={!detectionZone || zoneLoading} className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : zoneLoading ? 'Loading admin zone…' : 'Start live detection'}</button>}
         {roomLeaseError && <div className="room-lease-error" role="alert">{roomLeaseError}</div>}
           </div>
-          <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>{detectionZone ? `Admin zone v${detectionZone.version} · line at ${(detectionZone.countingLineYBps / 100).toFixed(1)}%` : 'Admin zone unavailable'}</span><span>CONFIDENCE ≥ 50%</span></footer>
+          <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>{detectionZone ? `Admin zone v${detectionZone.version} · enter + leave to count` : 'Admin zone unavailable'}</span><span>CONFIDENCE ≥ 50%</span></footer>
         </section>
 
         <aside className="room-ticket">

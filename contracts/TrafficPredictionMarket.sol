@@ -22,11 +22,14 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     enum Status { None, Open, Proposed, Challenged, Resolved, Cancelled }
 
     struct RoomZone {
-        uint16 x1Bps;
-        uint16 y1Bps;
-        uint16 x2Bps;
-        uint16 y2Bps;
-        uint16 countingLineYBps;
+        uint16 topLeftXBps;
+        uint16 topLeftYBps;
+        uint16 topRightXBps;
+        uint16 topRightYBps;
+        uint16 bottomRightXBps;
+        uint16 bottomRightYBps;
+        uint16 bottomLeftXBps;
+        uint16 bottomLeftYBps;
         uint32 version;
         bytes32 configHash;
     }
@@ -62,6 +65,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     mapping(uint256 => mapping(address => bool)) public claimed;
     mapping(address => uint256) public challengeRefunds;
     mapping(bytes32 => RoomZone) public roomZones;
+    mapping(bytes32 => address) public roleAccount;
 
     function getMarket(uint256 marketId) external view returns (Market memory) {
         return markets[marketId];
@@ -78,7 +82,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     error UnauthorizedZoneAdmin();
     error StaleZoneConfiguration();
 
-    event RoomZoneUpdated(bytes32 indexed roomId, uint32 indexed version, bytes32 indexed configHash, uint16 x1Bps, uint16 y1Bps, uint16 x2Bps, uint16 y2Bps, uint16 countingLineYBps);
+    event RoomZoneUpdated(bytes32 indexed roomId, uint32 indexed version, bytes32 indexed configHash);
     event MarketCreated(uint256 indexed marketId, bytes32 indexed roomId, uint64 closeTime, uint32 lowerBound, uint32 upperBound, uint32 exactTarget, uint32 zoneVersion, bytes32 zoneConfigHash);
     event PositionOpened(uint256 indexed marketId, address indexed account, Outcome indexed outcome, uint256 amount);
     event MarketResolved(uint256 indexed marketId, uint32 finalCount, Outcome winner, bytes32 indexed evidenceHash);
@@ -87,6 +91,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     event MarketCancelled(uint256 indexed marketId);
     event Claimed(uint256 indexed marketId, address indexed account, uint256 amount);
     event ChallengeRefundAccrued(address indexed challenger, uint256 amount);
+    event OperationalRoleRotated(bytes32 indexed role, address indexed previousAccount, address indexed newAccount);
 
     constructor(address admin, address oracle, address marketOperator, address disputeResolver)
         AccessControlDefaultAdminRules(2 days, admin)
@@ -97,6 +102,43 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         _grantRole(ORACLE_ROLE, oracle);
         _grantRole(MARKET_ROLE, marketOperator);
         _grantRole(DISPUTE_ROLE, disputeResolver);
+        roleAccount[ORACLE_ROLE] = oracle;
+        roleAccount[MARKET_ROLE] = marketOperator;
+        roleAccount[DISPUTE_ROLE] = disputeResolver;
+    }
+
+    /// @notice Atomically rotates one singleton operational role without exposing a gap in authority.
+    function rotateOperationalRole(bytes32 role, address newAccount) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (role != ORACLE_ROLE && role != MARKET_ROLE && role != DISPUTE_ROLE) revert InvalidConfiguration();
+        _rotateOperationalRole(role, newAccount);
+    }
+
+    /// @notice Rotates all operational wallets atomically from one admin signature.
+    function rotateAllOperationalRoles(address oracle, address marketOperator, address disputeResolver) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (oracle == address(0) || marketOperator == address(0) || disputeResolver == address(0) ||
+            oracle == PLATFORM_ADMIN || marketOperator == PLATFORM_ADMIN || disputeResolver == PLATFORM_ADMIN ||
+            oracle == marketOperator || oracle == disputeResolver || marketOperator == disputeResolver) revert InvalidConfiguration();
+        address oldOracle = roleAccount[ORACLE_ROLE];
+        address oldMarketOperator = roleAccount[MARKET_ROLE];
+        address oldDisputeResolver = roleAccount[DISPUTE_ROLE];
+        _revokeRole(ORACLE_ROLE, oldOracle); _revokeRole(MARKET_ROLE, oldMarketOperator); _revokeRole(DISPUTE_ROLE, oldDisputeResolver);
+        _grantRole(ORACLE_ROLE, oracle); _grantRole(MARKET_ROLE, marketOperator); _grantRole(DISPUTE_ROLE, disputeResolver);
+        roleAccount[ORACLE_ROLE] = oracle; roleAccount[MARKET_ROLE] = marketOperator; roleAccount[DISPUTE_ROLE] = disputeResolver;
+        emit OperationalRoleRotated(ORACLE_ROLE, oldOracle, oracle);
+        emit OperationalRoleRotated(MARKET_ROLE, oldMarketOperator, marketOperator);
+        emit OperationalRoleRotated(DISPUTE_ROLE, oldDisputeResolver, disputeResolver);
+    }
+
+    function _rotateOperationalRole(bytes32 role, address newAccount) internal {
+        if (newAccount == address(0) || newAccount == PLATFORM_ADMIN) revert InvalidConfiguration();
+        address previousAccount = roleAccount[role];
+        if (newAccount == previousAccount) return;
+        if (newAccount == roleAccount[ORACLE_ROLE] || newAccount == roleAccount[MARKET_ROLE] || newAccount == roleAccount[DISPUTE_ROLE])
+            revert InvalidConfiguration();
+        _grantRole(role, newAccount);
+        roleAccount[role] = newAccount;
+        _revokeRole(role, previousAccount);
+        emit OperationalRoleRotated(role, previousAccount, newAccount);
     }
 
     /// @notice Defines the normalized rectangle and counting line for future markets in a room.
@@ -104,21 +146,20 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     ///      The fixed address check remains authoritative even if AccessControl admin ownership changes.
     function setRoomZone(
         bytes32 roomId,
-        uint16 x1Bps,
-        uint16 y1Bps,
-        uint16 x2Bps,
-        uint16 y2Bps,
-        uint16 countingLineYBps
+        uint16[8] calldata geometry
     ) external {
         if (msg.sender != PLATFORM_ADMIN) revert UnauthorizedZoneAdmin();
-        if (roomId == bytes32(0) || x2Bps > 10_000 || y2Bps > 10_000 || x1Bps >= x2Bps || y1Bps >= y2Bps ||
-            countingLineYBps < y1Bps || countingLineYBps > y2Bps) revert InvalidConfiguration();
+        for (uint256 i; i < geometry.length; ++i) if (geometry[i] > 10_000) revert InvalidConfiguration();
+        if (roomId == bytes32(0) || geometry[0] >= geometry[2] || geometry[6] >= geometry[4] || geometry[1] >= geometry[7] ||
+            geometry[3] >= geometry[5])
+            revert InvalidConfiguration();
 
         RoomZone storage zone = roomZones[roomId];
         uint32 nextVersion = zone.version + 1;
-        bytes32 configHash = keccak256(abi.encode(roomId, x1Bps, y1Bps, x2Bps, y2Bps, countingLineYBps));
-        roomZones[roomId] = RoomZone(x1Bps, y1Bps, x2Bps, y2Bps, countingLineYBps, nextVersion, configHash);
-        emit RoomZoneUpdated(roomId, nextVersion, configHash, x1Bps, y1Bps, x2Bps, y2Bps, countingLineYBps);
+        bytes32 configHash = keccak256(abi.encode(roomId, geometry));
+        roomZones[roomId] = RoomZone(geometry[0], geometry[1], geometry[2], geometry[3], geometry[4], geometry[5],
+            geometry[6], geometry[7], nextVersion, configHash);
+        emit RoomZoneUpdated(roomId, nextVersion, configHash);
     }
 
     function createMarket(

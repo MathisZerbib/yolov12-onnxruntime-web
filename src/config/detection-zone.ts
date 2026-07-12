@@ -3,11 +3,14 @@ export const PLATFORM_ADMIN_ADDRESS = '0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1
 export interface DetectionZone {
   roomId: string;
   roomKey: `0x${string}`;
-  x1Bps: number;
-  y1Bps: number;
-  x2Bps: number;
-  y2Bps: number;
-  countingLineYBps: number;
+  topLeftXBps: number;
+  topLeftYBps: number;
+  topRightXBps: number;
+  topRightYBps: number;
+  bottomRightXBps: number;
+  bottomRightYBps: number;
+  bottomLeftXBps: number;
+  bottomLeftYBps: number;
   version: number;
   configHash: `0x${string}`;
   updatedAt: number;
@@ -16,7 +19,8 @@ export interface DetectionZone {
 
 export type DetectionZoneDraft = Pick<
   DetectionZone,
-  'x1Bps' | 'y1Bps' | 'x2Bps' | 'y2Bps' | 'countingLineYBps'
+  'topLeftXBps' | 'topLeftYBps' | 'topRightXBps' | 'topRightYBps' |
+  'bottomRightXBps' | 'bottomRightYBps' | 'bottomLeftXBps' | 'bottomLeftYBps'
 >;
 
 export function isPlatformAdmin(address?: string): boolean {

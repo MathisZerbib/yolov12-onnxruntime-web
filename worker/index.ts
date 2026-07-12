@@ -11,22 +11,28 @@ const PLATFORM_ADMIN_ADDRESS = '0x2a1f44ce3759b8624ad8b5828efee2dd370dca1e';
 
 interface StoredDetectionZone {
   room_id: string;
-  x1_bps: number;
-  y1_bps: number;
-  x2_bps: number;
-  y2_bps: number;
-  counting_line_y_bps: number;
+  top_left_x_bps: number;
+  top_left_y_bps: number;
+  top_right_x_bps: number;
+  top_right_y_bps: number;
+  bottom_right_x_bps: number;
+  bottom_right_y_bps: number;
+  bottom_left_x_bps: number;
+  bottom_left_y_bps: number;
   version: number;
   updated_by: string;
   updated_at: number;
 }
 
 interface DetectionZoneInput {
-  x1Bps?: number;
-  y1Bps?: number;
-  x2Bps?: number;
-  y2Bps?: number;
-  countingLineYBps?: number;
+  topLeftXBps?: number;
+  topLeftYBps?: number;
+  topRightXBps?: number;
+  topRightYBps?: number;
+  bottomRightXBps?: number;
+  bottomRightYBps?: number;
+  bottomLeftXBps?: number;
+  bottomLeftYBps?: number;
   expectedVersion?: number;
 }
 
@@ -34,10 +40,11 @@ function roomKey(roomId: string): Hex {
   return keccak256(toBytes(roomId));
 }
 
-function zoneConfigHash(roomId: string, zone: Pick<StoredDetectionZone, 'x1_bps' | 'y1_bps' | 'x2_bps' | 'y2_bps' | 'counting_line_y_bps'>): Hex {
+function zoneConfigHash(roomId: string, zone: StoredDetectionZone): Hex {
   return keccak256(encodeAbiParameters(
-    [{ type: 'bytes32' }, { type: 'uint16' }, { type: 'uint16' }, { type: 'uint16' }, { type: 'uint16' }, { type: 'uint16' }],
-    [roomKey(roomId), zone.x1_bps, zone.y1_bps, zone.x2_bps, zone.y2_bps, zone.counting_line_y_bps],
+    [{ type: 'bytes32' }, { type: 'uint16[8]' }],
+    [roomKey(roomId), [zone.top_left_x_bps, zone.top_left_y_bps, zone.top_right_x_bps, zone.top_right_y_bps,
+      zone.bottom_right_x_bps, zone.bottom_right_y_bps, zone.bottom_left_x_bps, zone.bottom_left_y_bps]],
   ));
 }
 
@@ -45,11 +52,14 @@ function publicZone(zone: StoredDetectionZone) {
   return {
     roomId: zone.room_id,
     roomKey: roomKey(zone.room_id),
-    x1Bps: zone.x1_bps,
-    y1Bps: zone.y1_bps,
-    x2Bps: zone.x2_bps,
-    y2Bps: zone.y2_bps,
-    countingLineYBps: zone.counting_line_y_bps,
+    topLeftXBps: zone.top_left_x_bps,
+    topLeftYBps: zone.top_left_y_bps,
+    topRightXBps: zone.top_right_x_bps,
+    topRightYBps: zone.top_right_y_bps,
+    bottomRightXBps: zone.bottom_right_x_bps,
+    bottomRightYBps: zone.bottom_right_y_bps,
+    bottomLeftXBps: zone.bottom_left_x_bps,
+    bottomLeftYBps: zone.bottom_left_y_bps,
     version: zone.version,
     configHash: zoneConfigHash(zone.room_id, zone),
     updatedBy: getAddress(zone.updated_by),
@@ -58,16 +68,19 @@ function publicZone(zone: StoredDetectionZone) {
 }
 
 async function getDetectionZone(env: Env, roomId: string): Promise<StoredDetectionZone | null> {
-  return env.DB.prepare('SELECT room_id,x1_bps,y1_bps,x2_bps,y2_bps,counting_line_y_bps,version,updated_by,updated_at FROM room_detection_zones WHERE room_id=?1 LIMIT 1')
+  return env.DB.prepare('SELECT room_id,top_left_x_bps,top_left_y_bps,top_right_x_bps,top_right_y_bps,bottom_right_x_bps,bottom_right_y_bps,bottom_left_x_bps,bottom_left_y_bps,version,updated_by,updated_at FROM room_detection_zones WHERE room_id=?1 LIMIT 1')
     .bind(roomId).first<StoredDetectionZone>();
 }
 
 function validZoneInput(zone: DetectionZoneInput): zone is Required<DetectionZoneInput> {
-  const values = [zone.x1Bps, zone.y1Bps, zone.x2Bps, zone.y2Bps, zone.countingLineYBps, zone.expectedVersion];
+  const values = [zone.topLeftXBps, zone.topLeftYBps, zone.topRightXBps, zone.topRightYBps, zone.bottomRightXBps,
+    zone.bottomRightYBps, zone.bottomLeftXBps, zone.bottomLeftYBps, zone.expectedVersion];
   if (!values.every(value => Number.isSafeInteger(value))) return false;
-  const { x1Bps, y1Bps, x2Bps, y2Bps, countingLineYBps, expectedVersion } = zone as Required<DetectionZoneInput>;
-  return expectedVersion >= 0 && x1Bps >= 0 && y1Bps >= 0 && x2Bps <= 10_000 && y2Bps <= 10_000 &&
-    x1Bps < x2Bps && y1Bps < y2Bps && countingLineYBps >= y1Bps && countingLineYBps <= y2Bps;
+  const z = zone as Required<DetectionZoneInput>;
+  const coordinates = values.slice(0, 8) as number[];
+  return z.expectedVersion >= 0 && coordinates.every(value => value >= 0 && value <= 10_000) &&
+    z.topLeftXBps < z.topRightXBps && z.bottomLeftXBps < z.bottomRightXBps &&
+    z.topLeftYBps < z.bottomLeftYBps && z.topRightYBps < z.bottomRightYBps;
 }
 
 function json(data: unknown, status = 200, headers: HeadersInit = {}): Response {
@@ -243,17 +256,24 @@ export default {
           } catch {
             return json({ error: 'Malformed zone configuration' }, 400, cors);
           }
-          if (!validZoneInput(input)) return json({ error: 'Zone must use integer basis points and keep the counting line inside the rectangle' }, 400, cors);
+          if (!validZoneInput(input)) return json({ error: 'Zone must be a valid four-corner trapezoid' }, 400, cors);
 
           const now = Math.floor(Date.now() / 1000);
           const current = await getDetectionZone(env, roomId);
           if ((current?.version ?? 0) !== input.expectedVersion) return json({ error: 'Zone changed; reload before saving', current: current ? publicZone(current) : null }, 409, cors);
-          const values = [input.x1Bps, input.y1Bps, input.x2Bps, input.y2Bps, input.countingLineYBps, PLATFORM_ADMIN_ADDRESS, now] as const;
+          const values = [input.topLeftXBps, input.topLeftYBps, input.topRightXBps, input.topRightYBps,
+            input.bottomRightXBps, input.bottomRightYBps, input.bottomLeftXBps, input.bottomLeftYBps,
+            PLATFORM_ADMIN_ADDRESS, now] as const;
           const mutation = current
-            ? await env.DB.prepare('UPDATE room_detection_zones SET x1_bps=?1,y1_bps=?2,x2_bps=?3,y2_bps=?4,counting_line_y_bps=?5,version=version+1,updated_by=?6,updated_at=?7 WHERE room_id=?8 AND version=?9')
+            ? await env.DB.prepare('UPDATE room_detection_zones SET top_left_x_bps=?1,top_left_y_bps=?2,top_right_x_bps=?3,top_right_y_bps=?4,bottom_right_x_bps=?5,bottom_right_y_bps=?6,bottom_left_x_bps=?7,bottom_left_y_bps=?8,version=version+1,updated_by=?9,updated_at=?10 WHERE room_id=?11 AND version=?12')
               .bind(...values, roomId, input.expectedVersion).run()
-            : await env.DB.prepare('INSERT INTO room_detection_zones (room_id,x1_bps,y1_bps,x2_bps,y2_bps,counting_line_y_bps,version,updated_by,updated_at) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8)')
-              .bind(roomId, input.x1Bps, input.y1Bps, input.x2Bps, input.y2Bps, input.countingLineYBps, PLATFORM_ADMIN_ADDRESS, now).run();
+            : await env.DB.prepare('INSERT INTO room_detection_zones (room_id,x1_bps,y1_bps,x2_bps,y2_bps,top_left_x_bps,top_left_y_bps,top_right_x_bps,top_right_y_bps,bottom_right_x_bps,bottom_right_y_bps,bottom_left_x_bps,bottom_left_y_bps,counting_line_y_bps,version,updated_by,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?16)')
+              .bind(roomId,
+                Math.min(input.topLeftXBps, input.bottomLeftXBps), Math.min(input.topLeftYBps, input.topRightYBps),
+                Math.max(input.topRightXBps, input.bottomRightXBps), Math.max(input.bottomLeftYBps, input.bottomRightYBps),
+                input.topLeftXBps, input.topLeftYBps, input.topRightXBps, input.topRightYBps,
+                input.bottomRightXBps, input.bottomRightYBps, input.bottomLeftXBps, input.bottomLeftYBps,
+                Math.round((Math.max(input.topLeftYBps, input.topRightYBps) + Math.min(input.bottomLeftYBps, input.bottomRightYBps)) / 2), PLATFORM_ADMIN_ADDRESS, now).run();
           if (mutation.meta.changes !== 1) return json({ error: 'Concurrent zone update rejected' }, 409, cors);
           const updated = await getDetectionZone(env, roomId);
           return json(publicZone(updated!), current ? 200 : 201, cors);
@@ -288,7 +308,7 @@ export default {
         if (declaredLength > 32_768) return json({ error: 'Manifest too large' }, 413, cors);
         const payload = await request.text();
         if (payload.length > 32_768) return json({ error: 'Manifest too large' }, 413, cors);
-        let manifest: { version?: number; purpose?: string; roomId?: string; finalVehicleCount?: number; startedAt?: string; completedAt?: string; model?: { sha256?: string; executionProvider?: string; inputSize?: number[] }; zone?: { version?: number; roomKey?: string; configHash?: string; x1Bps?: number; y1Bps?: number; x2Bps?: number; y2Bps?: number; countingLineYBps?: number } };
+        let manifest: { version?: number; purpose?: string; roomId?: string; finalVehicleCount?: number; startedAt?: string; completedAt?: string; model?: { sha256?: string; executionProvider?: string; inputSize?: number[] }; zone?: { version?: number; roomKey?: string; configHash?: string; topLeftXBps?: number; topLeftYBps?: number; topRightXBps?: number; topRightYBps?: number; bottomRightXBps?: number; bottomRightYBps?: number; bottomLeftXBps?: number; bottomLeftYBps?: number } };
         try {
           manifest = JSON.parse(payload) as typeof manifest;
         } catch {
@@ -298,21 +318,26 @@ export default {
         const completedAt = Date.parse(manifest.completedAt ?? '');
         const validWindow = Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt && completedAt - startedAt <= 120_000 && Math.abs(Date.now() - completedAt) <= 60_000;
         const validModel = manifest.model?.sha256 === env.APPROVED_MODEL_SHA256 && ['webgpu', 'wasm'].includes(manifest.model.executionProvider ?? '') && manifest.model.inputSize?.[0] === 640 && manifest.model.inputSize?.[1] === 640;
-        if (manifest.version !== 2 || manifest.purpose !== 'crossflow-market-resolution' || !manifest.roomId || !ROOM_ID_PATTERN.test(manifest.roomId) || !validModel || !validWindow || !Number.isSafeInteger(manifest.finalVehicleCount) || Number(manifest.finalVehicleCount) < 0 || Number(manifest.finalVehicleCount) > 1_000_000) return json({ error: 'Invalid or unapproved proof manifest' }, 400, cors);
+        if (manifest.version !== 3 || manifest.purpose !== 'crossflow-market-resolution' || !manifest.roomId || !ROOM_ID_PATTERN.test(manifest.roomId) || !validModel || !validWindow || !Number.isSafeInteger(manifest.finalVehicleCount) || Number(manifest.finalVehicleCount) < 0 || Number(manifest.finalVehicleCount) > 1_000_000) return json({ error: 'Invalid or unapproved proof manifest' }, 400, cors);
         const configuredZone = await getDetectionZone(env, manifest.roomId);
         if (!configuredZone) return json({ error: 'Detection zone is not configured' }, 409, cors);
         const approvedZone = publicZone(configuredZone);
         const submittedZone = manifest.zone;
         if (!submittedZone || submittedZone.version !== approvedZone.version || submittedZone.roomKey !== approvedZone.roomKey || submittedZone.configHash !== approvedZone.configHash ||
-            submittedZone.x1Bps !== approvedZone.x1Bps || submittedZone.y1Bps !== approvedZone.y1Bps || submittedZone.x2Bps !== approvedZone.x2Bps || submittedZone.y2Bps !== approvedZone.y2Bps || submittedZone.countingLineYBps !== approvedZone.countingLineYBps)
+            submittedZone.topLeftXBps !== approvedZone.topLeftXBps || submittedZone.topLeftYBps !== approvedZone.topLeftYBps ||
+            submittedZone.topRightXBps !== approvedZone.topRightXBps || submittedZone.topRightYBps !== approvedZone.topRightYBps ||
+            submittedZone.bottomRightXBps !== approvedZone.bottomRightXBps || submittedZone.bottomRightYBps !== approvedZone.bottomRightYBps ||
+            submittedZone.bottomLeftXBps !== approvedZone.bottomLeftXBps || submittedZone.bottomLeftYBps !== approvedZone.bottomLeftYBps)
           return json({ error: 'Stale or unauthorized detection zone' }, 409, cors);
         const leaseToken = request.headers.get('x-room-lease');
         const coordinator = env.ROOMS.getByName(manifest.roomId);
         if (!leaseToken || !await coordinator.verify(address, await sha256(leaseToken))) return json({ error: 'Room lease is missing or expired' }, 409, cors);
         const id = crypto.randomUUID();
         const digest = await sha256(payload);
-        const inserted = await env.DB.prepare('INSERT INTO inference_manifests (id,address,room_id,model_sha256,manifest_sha256,payload,created_at) SELECT ?1,?2,?3,?4,?5,?6,?7 FROM room_detection_zones WHERE room_id=?3 AND version=?8 AND x1_bps=?9 AND y1_bps=?10 AND x2_bps=?11 AND y2_bps=?12 AND counting_line_y_bps=?13')
-          .bind(id, address, manifest.roomId, env.APPROVED_MODEL_SHA256, digest, payload, Math.floor(Date.now() / 1000), approvedZone.version, approvedZone.x1Bps, approvedZone.y1Bps, approvedZone.x2Bps, approvedZone.y2Bps, approvedZone.countingLineYBps).run();
+        const inserted = await env.DB.prepare('INSERT INTO inference_manifests (id,address,room_id,model_sha256,manifest_sha256,payload,created_at) SELECT ?1,?2,?3,?4,?5,?6,?7 FROM room_detection_zones WHERE room_id=?3 AND version=?8 AND top_left_x_bps=?9 AND top_left_y_bps=?10 AND top_right_x_bps=?11 AND top_right_y_bps=?12 AND bottom_right_x_bps=?13 AND bottom_right_y_bps=?14 AND bottom_left_x_bps=?15 AND bottom_left_y_bps=?16')
+          .bind(id, address, manifest.roomId, env.APPROVED_MODEL_SHA256, digest, payload, Math.floor(Date.now() / 1000), approvedZone.version,
+            approvedZone.topLeftXBps, approvedZone.topLeftYBps, approvedZone.topRightXBps, approvedZone.topRightYBps,
+            approvedZone.bottomRightXBps, approvedZone.bottomRightYBps, approvedZone.bottomLeftXBps, approvedZone.bottomLeftYBps).run();
         if (inserted.meta.changes !== 1) return json({ error: 'Detection zone changed while the proof was being verified' }, 409, cors);
         return json({ id, sha256: digest }, 201, cors);
       }

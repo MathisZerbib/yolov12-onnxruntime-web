@@ -9,6 +9,9 @@ const LeaderboardPage = lazy(() => import('@/pages/LeaderboardPage'));
 const HowItWorksPage = lazy(() => import('@/pages/HowItWorksPage'));
 const ActivityPage = lazy(() => import('@/pages/ActivityPage'));
 const AdminZonesPage = lazy(() => import('@/pages/AdminZonesPage'));
+const AdminPage = lazy(() => import('@/pages/AdminPage'));
+const AdminContractsPage = lazy(() => import('@/pages/AdminContractsPage'));
+const AdminExplorerPage = lazy(() => import('@/pages/AdminExplorerPage'));
 
 function App() {
   return (
@@ -22,6 +25,9 @@ function App() {
         <Route path="/how-it-works" element={<HowItWorksPage />} />
         <Route path="/activity" element={<ActivityPage />} />
         <Route path="/admin/zones" element={<AdminZonesPage />} />
+        <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admin/contracts" element={<AdminContractsPage />} />
+        <Route path="/admin/explorer" element={<AdminExplorerPage />} />
       </Routes></Suspense>
     </BrowserRouter>
   );

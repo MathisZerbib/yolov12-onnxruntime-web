@@ -218,13 +218,13 @@ export function GlobeLive({
         const label = (
           <>
             <span style={{
-              width: 8, height: 8, background: "#ff3b30", borderRadius: "50%",
-              boxShadow: "0 0 8px #ff3b30",
+              width: 8, height: 8, background: "#d7ff45", borderRadius: "50%",
+              boxShadow: "0 0 8px #d7ff45",
               animation: "live-pulse 1.5s ease-in-out infinite",
             }} />
             <span style={{
               fontFamily: "monospace", fontSize: "0.6rem", fontWeight: 600,
-              letterSpacing: "0.1em", color: "#ff3b30", textTransform: "uppercase",
+              letterSpacing: "0.1em", color: "#d7ff45", textTransform: "uppercase",
             }}>LIVE</span>
             <span style={{
               fontFamily: "system-ui, sans-serif", fontSize: "0.6rem",

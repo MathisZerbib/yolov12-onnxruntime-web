@@ -103,9 +103,11 @@ npm run contract:artifact
 npm run contract:compile
 ```
 
-The fixed platform admin is `0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e`. After that wallet is connected and SIWE-authenticated, `/admin/zones` can edit versioned room zones, publish them on-chain, and deploy `TrafficPredictionMarket` through Rabby, MetaMask, or Phantom. Deployment takes three public role addresses—an oracle, market operator, and dispute resolver—which must all be distinct from one another and the admin. Signing remains inside the wallet; the application never accepts a private key.
+The fixed platform admin is `0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e`. After that wallet is connected and SIWE-authenticated, `/admin/zones` can edit versioned room zones, publish them on-chain, and deploy `TrafficPredictionMarket` through Rabby, MetaMask, or Phantom. The testnet role-wallet kit generates the oracle, market-operator, and dispute-resolver wallets locally, encrypts each one as a standard Web3 V3 keystore with a user-supplied password, and fills only their public addresses into the constructor. Deployment stays locked until all three backups are downloaded and explicitly confirmed. The password is never stored, and a page reload discards the encrypted in-memory kit, so keep the files and password offline. Signing remains inside the connected admin wallet; the application never accepts or transmits a raw private key.
 
 After deployment, configure `VITE_MARKET_CONTRACT_ADDRESS` and `VITE_ACTIVE_MARKET_ID`. The UI will not enable payable bets while either value is missing. A passing local suite is a release gate, not a substitute for an independent audit; do not describe the contract as “bulletproof” or deploy it to mainnet without one.
+
+The app currently identifies `0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139` as its Arbitrum Sepolia contract. The admin dashboard reports it as a legacy rectangle-zone deployment; four-corner trapezoid publication requires deploying the regenerated artifact and then setting `VITE_MARKET_CONTRACT_ADDRESS` to that new address.
 
 Use the Arbiscan/Etherscan API key only after deployment for source verification on chain `421614`. It is intentionally excluded from the browser bundle and source control.
 
