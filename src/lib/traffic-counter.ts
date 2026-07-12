@@ -17,7 +17,7 @@ export interface TrafficConfig {
 }
 
 const DEFAULT_TRAFFIC_CONFIG: TrafficConfig = {
-  vehicleClasses: ['car'],
+  vehicleClasses: ['bicycle', 'car', 'motorcycle', 'bus', 'truck'],
   roiPts: [
     { x: 0, y: 0.25 },
     { x: 0, y: 1 },

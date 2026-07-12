@@ -86,7 +86,7 @@ export default function AdminZonesPage() {
     let cancelled = false;
     setZoneContractCompatible(null);
     publicClient.getCode({ address: configuredContract }).then(code => {
-      if (!cancelled) setZoneContractCompatible(Boolean(code?.toLowerCase().includes('a0d9a4b5')));
+      if (!cancelled) setZoneContractCompatible(Boolean(code && code !== '0x'));
     }).catch(() => { if (!cancelled) setZoneContractCompatible(false); });
     return () => { cancelled = true; };
   }, [configuredContract, publicClient]);
@@ -159,21 +159,60 @@ export default function AdminZonesPage() {
     return publicClient.waitForTransactionReceipt({ hash, confirmations: 1, onReplaced: () => setState('REPLACED') });
   }
 
+  async function getRevertReason(hash: `0x${string}`): Promise<string> {
+    if (!publicClient) return 'RPC unavailable';
+    try {
+      // Get the tx to replay it as eth_call
+      const tx = await publicClient.getTransaction({ hash });
+      if (!tx) return 'Transaction not found';
+      // Replay the call to get the revert reason
+      await publicClient.call({
+        account: tx.from,
+        to: tx.to!,
+        data: tx.input,
+      });
+      return 'Unknown revert reason';
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      const m = msg.match(/reverted with reason string '([^']+)'/i) || msg.match(/reverted with custom error '([^']+)'/i) || msg.match(/execution reverted:\s*(.+)/i);
+      if (m) return m[1].trim();
+      if (msg.includes('UnauthorizedZoneAdmin')) return 'Only the platform admin wallet can set zones';
+      if (msg.includes('InvalidConfiguration')) return 'Zone geometry is invalid according to the contract';
+      if (msg.includes('StaleZoneConfiguration')) return 'Zone version mismatch — refresh and save the zone again';
+      return msg.split('\n')[0] || 'Unknown revert reason';
+    }
+  }
+
   async function publishZoneOnChain() {
     if (!configuredContract || !zoneContractCompatible || !selectedZone || dirty || !authenticatedAdmin || chainId !== arbitrumSepolia.id) return;
+    if (!publicClient) { setNotice('Arbitrum Sepolia RPC is unavailable'); return; }
+    if (!address) { setNotice('Wallet not connected'); return; }
     setZoneTxState('AWAITING_SIGNATURE'); setNotice('');
-    try {
-      const hash = await writeContractAsync({ address: configuredContract, abi: trafficMarketAbi, functionName: 'setRoomZone', args: [selectedZone.roomKey, [
+    const args = [selectedZone.roomKey, [
         selectedZone.topLeftXBps, selectedZone.topLeftYBps, selectedZone.topRightXBps, selectedZone.topRightYBps,
-        selectedZone.bottomRightXBps, selectedZone.bottomRightYBps, selectedZone.bottomLeftXBps, selectedZone.bottomLeftYBps]], chainId: arbitrumSepolia.id });
+        selectedZone.bottomRightXBps, selectedZone.bottomRightYBps, selectedZone.bottomLeftXBps, selectedZone.bottomLeftYBps]] as const;
+    try {
+      const hash = await writeContractAsync({ address: configuredContract, abi: trafficMarketAbi, functionName: 'setRoomZone', args, chainId: arbitrumSepolia.id });
       setZoneHash(hash); setZoneTxState('SUBMITTED');
       const receipt = await waitForReceipt(hash, setZoneTxState);
-      if (receipt.status !== 'success') throw new Error('Zone transaction reverted');
+      if (receipt.status !== 'success') {
+        const revertReason = await getRevertReason(hash);
+        throw new Error(revertReason);
+      }
       setZoneTxState('CONFIRMED');
       setNotice(`Zone ${selectedZone.configHash.slice(0, 12)}… is now registered on-chain.`);
     } catch (error) {
-      setZoneTxState('FAILED');
-      setNotice(error instanceof Error ? error.message.split('\n')[0] : 'Zone transaction failed');
+      const raw = error instanceof Error ? error.message : '';
+      let reason = raw.split('\n')[0] || 'Zone transaction failed';
+      const revertMatch = raw.match(/reverted with reason string '([^']+)'/i) || raw.match(/reverted with custom error '([^']+)'/i) || raw.match(/execution reverted:\s*(.+)/i);
+      if (revertMatch) reason = revertMatch[1].trim();
+      else if (raw.includes('UnauthorizedZoneAdmin')) reason = 'Only the platform admin wallet can set zones';
+      else if (raw.includes('InvalidConfiguration')) reason = 'Zone geometry is invalid according to the contract';
+      else if (raw.includes('StaleZoneConfiguration')) reason = 'Zone version mismatch — refresh and save the zone again';
+      // Keep the hash for the Arbiscan link
+      if (zoneHash) setZoneTxState('FAILED');
+      else setZoneTxState(undefined);
+      setNotice(reason);
     }
   }
 
@@ -201,7 +240,7 @@ export default function AdminZonesPage() {
                 <defs><pattern id="zone-scan-texture" width="420" height="420" patternUnits="userSpaceOnUse" patternTransform="rotate(24)"><line x1="0" y1="0" x2="0" y2="420" /></pattern></defs>
                 <polygon className="preview-zone" points={`${draft.topLeftXBps},${draft.topLeftYBps} ${draft.topRightXBps},${draft.topRightYBps} ${draft.bottomRightXBps},${draft.bottomRightYBps} ${draft.bottomLeftXBps},${draft.bottomLeftYBps}`} />
                 <polygon className="preview-zone-texture" points={`${draft.topLeftXBps},${draft.topLeftYBps} ${draft.topRightXBps},${draft.topRightYBps} ${draft.bottomRightXBps},${draft.bottomRightYBps} ${draft.bottomLeftXBps},${draft.bottomLeftYBps}`} />
-                {CORNERS.map((corner, index) => <g key={corner.label} className="corner-handle" transform={`translate(${draft[corner.x]},${draft[corner.y]})`} onPointerDown={event => { event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId); setDragTarget(index); }}><circle r="230" /><text y="70" textAnchor="middle">{index + 1}</text></g>)}
+                {CORNERS.map((corner, index) => <g key={corner.label} className="corner-handle" data-index={index + 1} transform={`translate(${draft[corner.x]},${draft[corner.y]})`} onPointerDown={event => { event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId); setDragTarget(index); }}><circle className="corner-halo" r="150" /><circle className="corner-ring" r="95" /><circle className="corner-dot" r="46" /><text className="corner-index" y="22" textAnchor="middle">{index + 1}</text></g>)}
               </svg>
               <span className="preview-grid" />
               <span className="preview-label"><Crosshair /> drag corners · vehicles count after entering and leaving</span>

@@ -44,6 +44,8 @@ export default function RoomPage() {
   const [synchronizedFrameReady, setSynchronizedFrameReady] = useState(false);
   const [roomLeaseError, setRoomLeaseError] = useState('');
   const [inferenceMs, setInferenceMs] = useState<number | null>(null);
+  const [detectionError, setDetectionError] = useState('');
+  const [visibleVehicles, setVisibleVehicles] = useState(0);
   const [detectionZone, setDetectionZone] = useState<DetectionZone | null>(null);
   const [zoneLoading, setZoneLoading] = useState(true);
 
@@ -130,7 +132,7 @@ export default function RoomPage() {
         [detectionZone.bottomRightXBps / 10_000 * w, detectionZone.bottomRightYBps / 10_000 * h],
         [detectionZone.bottomLeftXBps / 10_000 * w, detectionZone.bottomLeftYBps / 10_000 * h],
       ];
-      ctx.fillStyle = 'rgba(76, 255, 128, 0.09)'; ctx.strokeStyle = 'rgba(76, 255, 128, 0.92)'; ctx.lineWidth = Math.max(1, w * 0.0015);
+      ctx.fillStyle = 'rgba(215, 255, 69, 0.08)'; ctx.strokeStyle = 'rgba(215, 255, 69, 0.9)'; ctx.lineWidth = Math.max(2, w * 0.002);
       ctx.beginPath(); ctx.moveTo(points[0][0], points[0][1]); for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]); ctx.closePath(); ctx.fill(); ctx.stroke();
     };
     draw(); video.addEventListener('loadedmetadata', draw); return () => video.removeEventListener('loadedmetadata', draw);
@@ -176,6 +178,8 @@ export default function RoomPage() {
         ctx.drawImage(video, 0, 0, w, h);
         try {
           const newDetections = await detector.detectCanvas(frame);
+          setDetectionError('');
+          setVisibleVehicles(newDetections.length);
           counterRef.current.update(newDetections, w, h);
           const now = performance.now();
           if (now - lastUiUpdateRef.current >= 250) {
@@ -186,8 +190,12 @@ export default function RoomPage() {
           drawSynchronizedFrame(synchronized, frame, newDetections, w, h);
           setSynchronizedFrameReady(true);
           drawCountingZone(overlay, w, h, roundZoneRef.current ?? detectionZone);
-        } catch {
-          // ignore
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Frame inference failed';
+          console.error('[live-detection]', error);
+          setDetectionError(message);
+          processingRef.current = false;
+          setProcessing(false);
         }
       }
     }
@@ -230,15 +238,25 @@ export default function RoomPage() {
       [zone.bottomRightXBps / 10_000 * w, zone.bottomRightYBps / 10_000 * h],
       [zone.bottomLeftXBps / 10_000 * w, zone.bottomLeftYBps / 10_000 * h],
     ] as const;
-    ctx.fillStyle = 'rgba(215, 255, 69, 0.045)';
+    ctx.fillStyle = 'rgba(215, 255, 69, 0.14)';
     ctx.beginPath(); ctx.moveTo(points[0][0], points[0][1]);
     for (const point of points.slice(1)) ctx.lineTo(point[0], point[1]);
     ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = 'rgba(215, 255, 69, 0.7)';
-    ctx.lineWidth = Math.max(1, w * 0.0015);
+    ctx.strokeStyle = '#d7ff45';
+    ctx.lineWidth = Math.max(3, w * 0.003);
     ctx.setLineDash([Math.max(3, w * 0.006), Math.max(2, w * 0.004)]);
     ctx.stroke();
     ctx.setLineDash([]);
+    const label = 'COUNTING ZONE · ENTER + LEAVE';
+    const fontSize = Math.max(12, w * 0.012);
+    ctx.font = `800 ${fontSize}px ui-monospace, monospace`;
+    ctx.textBaseline = 'top';
+    const labelX = Math.max(0, points[0][0]);
+    const labelY = Math.max(0, points[0][1] - fontSize - 14);
+    ctx.fillStyle = '#d7ff45';
+    ctx.fillRect(labelX, labelY, ctx.measureText(label).width + 16, fontSize + 10);
+    ctx.fillStyle = '#10110e';
+    ctx.fillText(label, labelX + 8, labelY + 5);
   }
 
   const startProcessing = useCallback(async () => {
@@ -271,7 +289,12 @@ export default function RoomPage() {
     processingRef.current = true;
     roundStartedAtRef.current = new Date();
     setSynchronizedFrameReady(false);
+    setDetectionError('');
+    setVisibleVehicles(0);
     setProcessing(true);
+    const video = videoRef.current;
+    const overlay = overlayRef.current;
+    if (video && overlay) drawCountingZone(overlay, video.videoWidth || 1280, video.videoHeight || 720, detectionZone);
     loop(detector);
   }, [detectionZone, loop, roomId, zoneLoading]);
 
@@ -336,13 +359,14 @@ export default function RoomPage() {
           <div className="video-viewport">
         <video
           ref={videoRef}
+          crossOrigin="anonymous"
           className={`room-video ${processing && synchronizedFrameReady ? 'is-synchronized' : ''}`}
           autoPlay
           muted
           playsInline
         />
         <canvas ref={synchronizedRef} className={`room-video synchronized-video ${processing && synchronizedFrameReady ? 'is-visible' : ''}`} />
-        <canvas ref={overlayRef} className="room-canvas" />
+        <canvas ref={overlayRef} className={`room-canvas zone-overlay ${processing ? 'is-active' : ''}`} aria-label="Configured vehicle counting zone" />
         <canvas ref={frameRef} className="hidden" aria-hidden="true" />
 
         {(!isReady || modelLoading) && (
@@ -357,11 +381,12 @@ export default function RoomPage() {
         <div className="vision-hud">
           <span><Crosshair /> YOLOV12 / 640PX</span>
           {detectionZone && <span>ZONE V{detectionZone.version}</span>}
-          <span className={processing ? 'active' : ''}><i /> {processing ? `DETECTING${inferenceMs ? ` / ${Math.round(inferenceMs)}MS` : ''}` : 'STANDBY'}</span>
+          <span className={processing ? 'active' : ''}><i /> {processing ? `DETECTING · ${visibleVehicles} IN FRAME${inferenceMs ? ` / ${Math.round(inferenceMs)}MS` : ''}` : 'STANDBY'}</span>
         </div>
         <div className="count-hud"><small>VEHICLES CROSSED</small><strong>{String(count).padStart(2, '0')}</strong><span>current round</span></div>
         {isReady && detectorReady && <button disabled={!detectionZone || zoneLoading} className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : zoneLoading ? 'Loading admin zone…' : 'Start live detection'}</button>}
         {roomLeaseError && <div className="room-lease-error" role="alert">{roomLeaseError}</div>}
+        {detectionError && <div className="room-lease-error" role="alert">Detection stopped: {detectionError}</div>}
           </div>
           <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>{detectionZone ? `Admin zone v${detectionZone.version} · enter + leave to count` : 'Admin zone unavailable'}</span><span>CONFIDENCE ≥ 50%</span></footer>
         </section>

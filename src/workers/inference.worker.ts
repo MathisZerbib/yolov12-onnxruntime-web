@@ -6,6 +6,7 @@ ort.env.logLevel = 'error';
 let session: ort.InferenceSession | null = null;
 let metadata: ModelMetadata | null = null;
 let inputCanvas: OffscreenCanvas | null = null;
+const VEHICLE_CLASSES = new Set(['bicycle', 'car', 'motorcycle', 'bus', 'truck']);
 
 function hex(buffer: ArrayBuffer): string { return Array.from(new Uint8Array(buffer), b => b.toString(16).padStart(2, '0')).join(''); }
 
@@ -49,10 +50,11 @@ function postprocess(output: ort.Tensor, originalWidth: number, originalHeight: 
   const detections: Detection[] = [];
   for (let index = 0; index < count; index++) {
     const offset = index * 6, score = values[offset + 4], classId = Math.round(values[offset + 5]);
-    if (score < confidence || metadata!.classes[classId] !== 'car') continue;
+    const className = metadata!.classes[classId];
+    if (score < confidence || !VEHICLE_CLASSES.has(className)) continue;
     const x1 = Math.max(0, (values[offset] - padX) / scale), y1 = Math.max(0, (values[offset + 1] - padY) / scale);
     const x2 = Math.min(originalWidth, (values[offset + 2] - padX) / scale), y2 = Math.min(originalHeight, (values[offset + 3] - padY) / scale);
-    if (x2 > x1 && y2 > y1) detections.push({ x: x1, y: y1, width: x2 - x1, height: y2 - y1, confidence: score, class: 'car' });
+    if (x2 > x1 && y2 > y1) detections.push({ x: x1, y: y1, width: x2 - x1, height: y2 - y1, confidence: score, class: className });
   }
   return nms(detections, metadata!.nmsThreshold);
 }
@@ -74,7 +76,13 @@ self.onmessage = async (event: MessageEvent) => {
       const actualHash = hex(await crypto.subtle.digest('SHA-256', model));
       if (actualHash !== event.data.expectedHash || actualHash !== metadata.sha256) throw new Error('Model hash verification failed');
       // Unverified bytes never enter the durable browser cache.
-      if (fetchedFromNetwork) await cache.put(modelUrl, modelResponse);
+      // The model is already verified and loaded into memory above, so a
+      // Cache.put failure (e.g. opaque/non-cacheable response in dev) must
+      // not abort initialization.
+      if (fetchedFromNetwork) {
+        try { await cache.put(modelUrl, modelResponse); }
+        catch { /* non-fatal: inference proceeds from the in-memory model */ }
+      }
       let failure: unknown;
       let selectedProvider: 'webgpu' | 'wasm' | undefined;
       for (const provider of ['webgpu', 'wasm'] as const) {
