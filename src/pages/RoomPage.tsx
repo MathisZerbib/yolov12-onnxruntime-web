@@ -14,6 +14,32 @@ import { getSharedDetector, ObjectDetector } from '@/lib/object-detector';
 import { Detection } from '@/lib/types';
 import { TrafficCounter } from '@/lib/traffic-counter';
 import type { DetectionZone } from '@/config/detection-zone';
+import { useRoomMarket, type RoomMarketState } from '@/lib/room-market';
+import { formatEther, parseEther } from 'viem';
+
+function formatCountdown(seconds: number): string {
+  const safe = Math.max(0, seconds);
+  const minutes = Math.floor(safe / 60);
+  return `${String(minutes).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function estimatedClaim(market: RoomMarketState | null, outcome: number, stake: string): string | null {
+  if (!market?.marketId || market.phase !== 'open' || market.feeBps === null || !/^\d+(?:\.\d{1,18})?$/.test(stake)) return null;
+  try {
+    const stakeWei = parseEther(stake);
+    if (stakeWei <= 0n) return null;
+    const totalAfter = BigInt(market.totalPoolWei) + stakeWei;
+    const selectedAfter = BigInt(market.outcomePoolsWei[outcome] ?? '0') + stakeWei;
+    const distributable = totalAfter - totalAfter * BigInt(market.feeBps) / 10_000n;
+    return Number(formatEther(stakeWei * distributable / selectedAfter)).toFixed(4);
+  } catch { return null; }
+}
+
+function estimatedMultiple(market: RoomMarketState | null, outcome: number, stake: string): string {
+  const claim = estimatedClaim(market, outcome, stake);
+  const stakeValue = Number(stake);
+  return claim && Number.isFinite(stakeValue) && stakeValue > 0 ? `${(Number(claim) / stakeValue).toFixed(2)}×` : '—';
+}
 
 export default function RoomPage() {
   const { roomId } = useParams();
@@ -40,7 +66,8 @@ export default function RoomPage() {
   const [selectedType, setSelectedType] = useState<number>(BET_TYPES[0].id);
   const [modelLoading, setModelLoading] = useState(true);
   const [detectorReady, setDetectorReady] = useState(false);
-  const [ethAmount, setEthAmount] = useState<number>(GAME_CONFIG.BETTING.MIN_ETH);
+  const [ethAmount, setEthAmount] = useState<string>(String(GAME_CONFIG.BETTING.MIN_ETH));
+  const [clock, setClock] = useState(() => Date.now());
   const [synchronizedFrameReady, setSynchronizedFrameReady] = useState(false);
   const [roomLeaseError, setRoomLeaseError] = useState('');
   const [inferenceMs, setInferenceMs] = useState<number | null>(null);
@@ -48,6 +75,12 @@ export default function RoomPage() {
   const [visibleVehicles, setVisibleVehicles] = useState(0);
   const [detectionZone, setDetectionZone] = useState<DetectionZone | null>(null);
   const [zoneLoading, setZoneLoading] = useState(true);
+  const { market, loading: marketLoading, stale: marketStale, error: marketError, syncedAt, refresh: refreshMarket } = useRoomMarket(roomId);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!room) return;
@@ -342,6 +375,22 @@ export default function RoomPage() {
   }
 
   const selectedBet = BET_TYPES.find((type) => type.id === selectedType) ?? BET_TYPES[0];
+  const serverNow = market ? market.serverTime + Math.max(0, Math.floor((clock - syncedAt) / 1_000)) : Math.floor(clock / 1_000);
+  const secondsRemaining = market?.closeTime ? Math.max(0, market.closeTime - serverNow) : 0;
+  const roundStatus = marketLoading ? 'SYNCING' : market?.phase === 'open' ? 'OPEN' : market?.phase === 'proposed' ? 'REVIEW' : market?.phase === 'challenged' ? 'DISPUTED' : 'WAITING';
+  const roundTiming = marketLoading ? 'Synchronizing round…' : market?.phase === 'open'
+    ? `Bets lock in ${formatCountdown(secondsRemaining)}`
+    : market?.phase === 'awaiting_result' || market?.phase === 'proposed' || market?.phase === 'challenged'
+      ? 'Previous result settling · next round preparing'
+      : 'Preparing the next round…';
+  const claimEstimate = estimatedClaim(market, selectedType, ethAmount);
+  const outcomeDescription = (typeId: number, fallback: string) => {
+    if (market?.lowerBound === null || market?.upperBound === null || market?.exactTarget === null || !market) return fallback;
+    if (typeId === 0) return `Below ${market.lowerBound}`;
+    if (typeId === 1) return `${market.lowerBound}–${market.upperBound}, except ${market.exactTarget}`;
+    if (typeId === 2) return `Above ${market.upperBound}`;
+    return `Exactly ${market.exactTarget}`;
+  };
 
   return (
     <main className="room-shell">
@@ -354,7 +403,7 @@ export default function RoomPage() {
         <section className="broadcast-stage">
           <div className="broadcast-bar">
             <div><span className="broadcast-live"><i /> LIVE</span><b>{room.name}</b><span>{room.location}</span></div>
-            <div><span><Volume2 /> Ambient audio</span><span><ShieldCheck /> Oracle verified</span></div>
+            <div><span><Volume2 /> Ambient audio</span><span><ShieldCheck /> On-device detector</span></div>
           </div>
           <div className="video-viewport">
         <video
@@ -392,13 +441,14 @@ export default function RoomPage() {
         </section>
 
         <aside className="room-ticket">
-          <div className="round-header"><div><span>ROUND #2841</span><b>Closes in 00:42</b></div><i>OPEN</i></div>
-          <div className="ticket-title"><h1>How many vehicles cross the line?</h1><p>Resolved automatically when the 60-second detection window closes.</p></div>
-          <div className="ticket-block"><label>Choose outcome</label><div className="room-outcomes">{BET_TYPES.map((type) => <button key={type.id} className={selectedType === type.id ? 'active' : ''} onClick={() => setSelectedType(type.id)}><span>{type.name}<small>{type.description}</small></span><b>{type.multDisplay}</b></button>)}</div></div>
-          <div className="ticket-block"><div className="ticket-label"><label htmlFor="room-stake">Stake</label><span>Balance 2.481 ETH</span></div><div className="ticket-amount"><input id="room-stake" aria-label="ETH stake" type="number" min={GAME_CONFIG.BETTING.MIN_ETH} max={GAME_CONFIG.BETTING.MAX_ETH} step="0.001" value={ethAmount} onChange={(e) => setEthAmount(Number(e.target.value))}/><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1,5).map((p) => <button key={p} onClick={() => setEthAmount(p)}>{p}</button>)}</div></div>
-          <div className="ticket-summary"><div><span>Your call</span><b>{selectedBet.name}</b></div><div><span>Potential payout</span><b>{(ethAmount * selectedBet.mult).toFixed(3)} ETH</b></div></div>
-          <PlacePositionButton outcome={selectedType} amount={ethAmount} />
-          <ChallengeTimeline />
+          <div className="round-header"><div><span>{market?.marketId ? `ROUND #${market.marketId}` : 'LIVE ROUND'}</span><b>{roundTiming}</b></div><i>{roundStatus}</i></div>
+          <div className="ticket-title"><h1>How many vehicles cross the zone?</h1><p>Odds move with the pool until betting locks. The result follows the room’s verified counting window.</p></div>
+          {(marketError || market?.error) && <div className="round-sync-warning" role="status"><span>{marketError || market?.error}</span><button onClick={() => void refreshMarket()}>Retry</button></div>}
+          <div className="ticket-block"><label>Choose outcome</label><div className="room-outcomes">{BET_TYPES.map((type) => <button key={type.id} disabled={market?.phase !== 'open'} className={selectedType === type.id ? 'active' : ''} onClick={() => setSelectedType(type.id)}><span>{type.name}<small>{outcomeDescription(type.id, type.description)}</small></span><b>{estimatedMultiple(market, type.id, ethAmount)}</b></button>)}</div></div>
+          <div className="ticket-block"><div className="ticket-label"><label htmlFor="room-stake">Stake</label><span>{market?.feeBps !== null && market ? `${market.feeBps / 100}% protocol fee` : 'Pari-mutuel pool'}</span></div><div className="ticket-amount"><input id="room-stake" aria-label="ETH stake" type="text" inputMode="decimal" autoComplete="off" value={ethAmount} onChange={(e) => setEthAmount(e.target.value)}/><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1,5).map((p) => <button key={p} onClick={() => setEthAmount(String(p))}>{p}</button>)}</div></div>
+          <div className="ticket-summary"><div><span>Your call</span><b>{selectedBet.name}</b></div><div><span>Estimated total claim</span><b>{claimEstimate ? `${claimEstimate} ETH` : '—'}</b><small>Changes as the pool moves</small></div></div>
+          <PlacePositionButton roomId={room.id} market={market} stale={marketStale} outcome={selectedType} amount={ethAmount} onConfirmed={refreshMarket} />
+          {(market?.phase === 'proposed' || market?.phase === 'challenged') && <ChallengeTimeline />}
           <p className="ticket-fineprint"><ShieldCheck /> Settlement secured on {GAME_CONFIG.NETWORK.NAME}</p>
         </aside>
       </div>

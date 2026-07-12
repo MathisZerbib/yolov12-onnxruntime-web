@@ -105,7 +105,19 @@ npm run contract:compile
 
 The fixed platform admin is `0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e`. After that wallet is connected and SIWE-authenticated, `/admin/zones` can edit versioned room zones, publish them on-chain, and deploy `TrafficPredictionMarket` through Rabby, MetaMask, or Phantom. The testnet role-wallet kit generates the oracle, market-operator, and dispute-resolver wallets locally, encrypts each one as a standard Web3 V3 keystore with a user-supplied password, and fills only their public addresses into the constructor. Deployment stays locked until all three backups are downloaded and explicitly confirmed. The password is never stored, and a page reload discards the encrypted in-memory kit, so keep the files and password offline. Signing remains inside the connected admin wallet; the application never accepts or transmits a raw private key.
 
-After deployment, configure `VITE_MARKET_CONTRACT_ADDRESS` and `VITE_ACTIVE_MARKET_ID`. The UI will not enable payable bets while either value is missing. A passing local suite is a release gate, not a substitute for an independent audit; do not describe the contract as “bulletproof” or deploy it to mainnet without one.
+After deployment, set `VITE_MARKET_CONTRACT_ADDRESS` for the frontend and set the same address as the Worker's `MARKET_CONTRACT_ADDRESS`. Markets are discovered per room on-chain; there is no build-time active-market ID to rotate.
+
+Continuous rounds use one `MarketScheduler` Durable Object keyed by the MARKET_ROLE account. This is intentional: a shared EOA nonce is the coordination boundary, so creation transactions for different rooms are serialized while public round reads remain stateless and horizontally scalable. Durable Object alarms create the next market when the current betting window locks, and a two-minute Cron Trigger acts as a recovery watchdog.
+
+Start with Tokyo only (`AUTO_MARKET_ROOMS=tokyo`). After deploying the replacement contract, configure the testnet operator secret:
+
+```bash
+npx wrangler secret put MARKET_OPERATOR_PRIVATE_KEY
+```
+
+For local development, copy `.dev.vars.example` to `.dev.vars` and insert the MARKET_ROLE testnet key. The Worker verifies that the secret-derived address is the contract's current MARKET_ROLE before spending gas. Never put the key in `wrangler.jsonc`, a `VITE_` variable, logs, or source control. A Worker secret is acceptable for this testnet automation stage; move signing into a policy-controlled KMS/MPC or isolated signer service before the contract holds production value.
+
+Result proposal remains deliberately separate from market creation. Browser inference manifests are not yet sufficient to trigger an ORACLE_ROLE signature because source authenticity and round-bound evidence still require a stronger attestation boundary. A passing local suite is a release gate, not a substitute for an independent audit; do not describe the contract as “bulletproof” or deploy it to mainnet without one.
 
 The app currently identifies `0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139` as its Arbitrum Sepolia contract. The admin dashboard reports it as a legacy rectangle-zone deployment; four-corner trapezoid publication requires deploying the regenerated artifact and then setting `VITE_MARKET_CONTRACT_ADDRESS` to that new address.
 

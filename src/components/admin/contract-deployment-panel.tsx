@@ -100,24 +100,24 @@ export function ContractDeploymentPanel() {
       const receipt = await publicClient.waitForTransactionReceipt({ hash, confirmations: 1 });
       if (receipt.status !== 'success' || !receipt.contractAddress) throw new Error('Contract deployment reverted');
       setDeployedAddress(receipt.contractAddress); setDeployState('CONFIRMED');
-      try {
-        const res = await fetch('/__crossflow_update_env', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            VITE_MARKET_CONTRACT_ADDRESS: receipt.contractAddress,
-            VITE_ACTIVE_MARKET_ID: '1',
-          }),
-        });
-        const data = await res.json().catch(() => null);
-        if (data?.ok) {
-          setNotice('Contract deployed and .env.development.local updated automatically. Restart the dev server to apply VITE_ACTIVE_MARKET_ID.');
-        } else {
-          setNotice(`Contract deployed at ${receipt.contractAddress}. .env update failed: ${data?.error ?? 'unknown error'}. Set VITE_MARKET_CONTRACT_ADDRESS and VITE_ACTIVE_MARKET_ID=1 manually.`);
+        try {
+          const res = await fetch('/__crossflow_update_env', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              VITE_MARKET_CONTRACT_ADDRESS: receipt.contractAddress,
+            }),
+          });
+          const data = await res.json().catch(() => null);
+          if (data?.ok) {
+            setNotice(`Contract deployed at ${receipt.contractAddress}. Environment updated automatically. Reloading in 2 seconds...`);
+            setTimeout(() => window.location.reload(), 2000);
+          } else {
+            setNotice(`Contract deployed at ${receipt.contractAddress}. Local env update failed: ${data?.error ?? 'unknown error'}. Set VITE_MARKET_CONTRACT_ADDRESS and Worker MARKET_CONTRACT_ADDRESS manually.`);
+          }
+        } catch {
+          setNotice(`Contract deployed at ${receipt.contractAddress}. Set VITE_MARKET_CONTRACT_ADDRESS and Worker MARKET_CONTRACT_ADDRESS manually.`);
         }
-      } catch {
-        setNotice(`Contract deployed at ${receipt.contractAddress}. Could not update .env automatically. Set VITE_MARKET_CONTRACT_ADDRESS and VITE_ACTIVE_MARKET_ID=1 manually.`);
-      }
     } catch (error) { setDeployState('FAILED'); setNotice(error instanceof Error ? error.message.split('\n')[0] : 'Deployment failed'); }
   }
 

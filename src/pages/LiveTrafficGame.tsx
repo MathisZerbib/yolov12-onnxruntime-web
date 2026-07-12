@@ -1,12 +1,11 @@
 import ScrollGlobe from '@/components/ui/scroll-globe';
+import { WalletButton } from '@/components/wallet-button';
 import { BET_TYPES, GAME_CONFIG } from '@/config/game-config';
 import { ROOMS } from '@/lib/globe-markers';
 import { getSharedDetector, ObjectDetector } from '@/lib/object-detector';
 import { ArrowUpRight, Check, ChevronRight, Crosshair, Radio, ShieldCheck } from 'lucide-react';
-import { WalletButton } from '@/components/wallet-button';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 export default function LiveTrafficGame() {
   const navigate = useNavigate();
@@ -28,7 +27,6 @@ export default function LiveTrafficGame() {
   const selectedRoom = ROOMS.find((r) => r.id === selectedRoomId) ?? ROOMS[0];
   const selectedBet = BET_TYPES.find((b) => b.id === betTypeId) ?? BET_TYPES[0];
   const handleOpenRoom = useCallback((roomId: string) => navigate(`/room/${roomId}`), [navigate]);
-  const potentialReturn = (ethAmount * selectedBet.mult).toFixed(3);
 
   return (
     <main className="exchange-shell">
@@ -83,7 +81,7 @@ export default function LiveTrafficGame() {
           <div className="builder-step">
             <label>Market outcome</label>
             <div className="outcome-grid">
-              {BET_TYPES.map((type) => <button key={type.id} className={type.id === betTypeId ? 'active' : ''} onClick={() => setBetTypeId(type.id)}><span>{type.name}</span><b>{type.multDisplay}</b><small>{type.description}</small></button>)}
+              {BET_TYPES.map((type) => <button key={type.id} className={type.id === betTypeId ? 'active' : ''} onClick={() => setBetTypeId(type.id)}><span>{type.name}</span><b>LIVE</b><small>{type.description}</small></button>)}
             </div>
           </div>
 
@@ -94,7 +92,7 @@ export default function LiveTrafficGame() {
           </div>
 
           <div className="position-ticket">
-            <div><span>Potential return</span><strong>{potentialReturn} <small>ETH</small></strong><p>≈ ${(Number(potentialReturn) * GAME_CONFIG.ETH_USD_PRICE).toLocaleString(undefined, { maximumFractionDigits: 2 })}</p></div>
+            <div><span>Pool-priced position</span><strong>{selectedBet.name}</strong><p>{selectedBet.description}</p></div>
             <button onClick={() => handleOpenRoom(selectedRoomId)}>Review position <ArrowUpRight /></button>
             <small>By continuing, you accept the market rules.</small>
           </div>

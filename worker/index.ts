@@ -1,6 +1,8 @@
 import { encodeAbiParameters, getAddress, isAddress, keccak256, toBytes, verifyMessage, type Hex } from 'viem';
 import { createSiweMessage, parseSiweMessage } from 'viem/siwe';
+import { readRoomMarketState } from './market-rounds';
 export { RoomCoordinator } from './room-coordinator';
+export { MarketScheduler } from './market-rounds';
 
 const CHAIN_ID = 421614;
 const NONCE_TTL_SECONDS = 5 * 60;
@@ -138,7 +140,7 @@ async function sessionAddress(request: Request, env: Env): Promise<string | null
 }
 
 export default {
-  async fetch(request, env): Promise<Response> {
+  async fetch(request, env, ctx): Promise<Response> {
     const cors = corsHeaders(request, env);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     const url = new URL(request.url);
@@ -234,6 +236,15 @@ export default {
         if (token) await env.DB.prepare('DELETE FROM auth_sessions WHERE token_hash = ?1').bind(await sha256(token)).run();
         const secure = String(env.ENVIRONMENT) === 'production' ? '; Secure' : '';
         return json({ ok: true }, 200, { ...cors, 'set-cookie': `${sessionCookieName(env)}=; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=0` });
+      }
+
+      const roomMarket = url.pathname.match(/^\/rooms\/([a-z0-9-]{1,64})\/market$/);
+      if (roomMarket && request.method === 'GET') {
+        const state = await readRoomMarketState(env, roomMarket[1]);
+        if (state.enabled && state.phase !== 'open') {
+          ctx.waitUntil(env.MARKET_SCHEDULER.getByName('market-operator').reconcile());
+        }
+        return json(state, 200, cors);
       }
 
       const roomZone = url.pathname.match(/^\/rooms\/([a-z0-9-]{1,64})\/zone$/);
@@ -347,5 +358,9 @@ export default {
       console.error(JSON.stringify({ event: 'request_error', path: url.pathname, error: error instanceof Error ? error.message : 'unknown' }));
       return json({ error: 'Request failed' }, 500, cors);
     }
+  },
+  async scheduled(_controller, env, ctx): Promise<void> {
+    const scheduler = env.MARKET_SCHEDULER.getByName('market-operator');
+    ctx.waitUntil(scheduler.reconcile());
   },
 } satisfies ExportedHandler<Env>;

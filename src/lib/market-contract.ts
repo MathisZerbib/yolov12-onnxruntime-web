@@ -1,60 +1,38 @@
+import { keccak256, toBytes } from 'viem';
+
+export const MARKET_STATUS = { NONE: 0, OPEN: 1, PROPOSED: 2, CHALLENGED: 3, RESOLVED: 4, CANCELLED: 5 } as const;
+
 export const trafficMarketAbi = [
-  { type: 'function', name: 'bet', stateMutability: 'payable', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'outcome', type: 'uint8' }], outputs: [] },
+  { type: 'function', name: 'latestMarketIdByRoom', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'roleAccount', stateMutability: 'view', inputs: [{ name: 'role', type: 'bytes32' }], outputs: [{ name: '', type: 'address' }] },
+  { type: 'function', name: 'outcomePools', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'outcome', type: 'uint8' }], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'getMarket', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [
+    { name: 'roomId', type: 'bytes32' }, { name: 'closeTime', type: 'uint64' }, { name: 'resolveDeadline', type: 'uint64' },
+    { name: 'claimDeadline', type: 'uint64' }, { name: 'challengeDeadline', type: 'uint64' }, { name: 'disputeDeadline', type: 'uint64' },
+    { name: 'lowerBound', type: 'uint32' }, { name: 'upperBound', type: 'uint32' }, { name: 'exactTarget', type: 'uint32' },
+    { name: 'finalCount', type: 'uint32' }, { name: 'zoneVersion', type: 'uint32' }, { name: 'feeBps', type: 'uint16' },
+    { name: 'winner', type: 'uint8' }, { name: 'status', type: 'uint8' }, { name: 'evidenceHash', type: 'bytes32' },
+    { name: 'zoneConfigHash', type: 'bytes32' }, { name: 'challengerEvidenceHash', type: 'bytes32' },
+    { name: 'challenger', type: 'address' }, { name: 'totalPool', type: 'uint256' }, { name: 'winningPool', type: 'uint256' },
+  ] },
+  { type: 'function', name: 'createMarket', stateMutability: 'nonpayable', inputs: [
+    { name: 'roomId', type: 'bytes32' }, { name: 'closeTime', type: 'uint64' }, { name: 'resolveDeadline', type: 'uint64' },
+    { name: 'lowerBound', type: 'uint32' }, { name: 'upperBound', type: 'uint32' }, { name: 'exactTarget', type: 'uint32' },
+    { name: 'feeBps', type: 'uint16' },
+  ], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'nextMarketId', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'roomZones', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [
+    { name: '', type: 'uint16[8]' }, { name: 'version', type: 'uint32' }, { name: 'configHash', type: 'bytes32' }
+  ] },
+  { type: 'function', name: 'paused', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'bool' }] },
+  { type: 'function', name: 'hasRole', stateMutability: 'view', inputs: [{ name: 'role', type: 'bytes32' }, { name: 'account', type: 'address' }], outputs: [{ name: '', type: 'bool' }] },
   { type: 'function', name: 'setRoomZone', stateMutability: 'nonpayable', inputs: [
     { name: 'roomId', type: 'bytes32' },
     { name: 'geometry', type: 'uint16[8]' },
   ], outputs: [] },
-  { type: 'function', name: 'paused', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
-  { type: 'function', name: 'createMarket', stateMutability: 'nonpayable', inputs: [
-    { name: 'roomId', type: 'bytes32' },
-    { name: 'closeTime', type: 'uint64' },
-    { name: 'resolveDeadline', type: 'uint64' },
-    { name: 'lowerBound', type: 'uint32' },
-    { name: 'upperBound', type: 'uint32' },
-    { name: 'exactTarget', type: 'uint32' },
-    { name: 'feeBps', type: 'uint16' },
-  ], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'nextMarketId', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'protocolFees', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'getMarket', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [{ type: 'tuple', components: [
-    { name: 'roomId', type: 'bytes32' },
-    { name: 'closeTime', type: 'uint64' },
-    { name: 'resolveDeadline', type: 'uint64' },
-    { name: 'claimDeadline', type: 'uint64' },
-    { name: 'challengeDeadline', type: 'uint64' },
-    { name: 'disputeDeadline', type: 'uint64' },
-    { name: 'lowerBound', type: 'uint32' },
-    { name: 'upperBound', type: 'uint32' },
-    { name: 'exactTarget', type: 'uint32' },
-    { name: 'finalCount', type: 'uint32' },
-    { name: 'zoneVersion', type: 'uint32' },
-    { name: 'feeBps', type: 'uint16' },
-    { name: 'winner', type: 'uint8' },
-    { name: 'status', type: 'uint8' },
-    { name: 'evidenceHash', type: 'bytes32' },
-    { name: 'zoneConfigHash', type: 'bytes32' },
-    { name: 'challengerEvidenceHash', type: 'bytes32' },
-    { name: 'challenger', type: 'address' },
-    { name: 'totalPool', type: 'uint256' },
-    { name: 'winningPool', type: 'uint256' },
-  ] }] },
-  // Custom errors — keccak256 selectors from the Solidity contract
-  { type: 'error', name: 'InvalidMarket', inputs: [] },
-  { type: 'error', name: 'InvalidConfiguration', inputs: [] },
-  { type: 'error', name: 'MarketClosed', inputs: [] },
-  { type: 'error', name: 'MarketNotClosed', inputs: [] },
-  { type: 'error', name: 'MarketNotClaimable', inputs: [] },
-  { type: 'error', name: 'InvalidStake', inputs: [] },
-  { type: 'error', name: 'AlreadyClaimed', inputs: [] },
-  { type: 'error', name: 'TransferFailed', inputs: [] },
-  { type: 'error', name: 'UnauthorizedZoneAdmin', inputs: [] },
-  { type: 'error', name: 'StaleZoneConfiguration', inputs: [] },
-  { type: 'function', name: 'roleAccount', stateMutability: 'view', inputs: [{ name: 'role', type: 'bytes32' }], outputs: [{ type: 'address' }] },
-  { type: 'function', name: 'pause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
-  { type: 'function', name: 'unpause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
-  { type: 'function', name: 'rotateOperationalRole', stateMutability: 'nonpayable', inputs: [{ name: 'role', type: 'bytes32' }, { name: 'newAccount', type: 'address' }], outputs: [] },
-  { type: 'function', name: 'rotateAllOperationalRoles', stateMutability: 'nonpayable', inputs: [{ name: 'oracle', type: 'address' }, { name: 'marketOperator', type: 'address' }, { name: 'disputeResolver', type: 'address' }], outputs: [] },
+  { type: 'function', name: 'isMarketBettable', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [{ name: '', type: 'bool' }] },
+  { type: 'function', name: 'protocolFees', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
 ] as const;
 export const DEFAULT_TESTNET_MARKET_ADDRESS = '0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139' as const;
 export const marketContractAddress = (import.meta.env.VITE_MARKET_CONTRACT_ADDRESS || DEFAULT_TESTNET_MARKET_ADDRESS) as `0x${string}`;
-export const activeMarketId = BigInt(import.meta.env.VITE_ACTIVE_MARKET_ID ?? '0');
+export function marketRoomKey(roomId: string): `0x${string}` { return keccak256(toBytes(roomId)); }

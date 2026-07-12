@@ -1,39 +1,52 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { parseEther } from 'viem';
 import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
-import { AUTH_API_URL } from '@/lib/wagmi';
-import { activeMarketId, marketContractAddress, trafficMarketAbi } from '@/lib/market-contract';
+import { GAME_CONFIG } from '@/config/game-config';
+import { marketContractAddress, marketRoomKey, trafficMarketAbi } from '@/lib/market-contract';
+import type { RoomMarketState } from '@/lib/room-market';
 import { TransactionStatus, type TransactionState } from './transaction-status';
 
-export function PlacePositionButton({ outcome, amount }: { outcome: number; amount: number }) {
+interface PlacePositionButtonProps {
+  roomId: string;
+  market: RoomMarketState | null;
+  stale: boolean;
+  outcome: number;
+  amount: string;
+  onConfirmed?: () => void;
+}
+
+const AMOUNT_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/;
+
+function friendlyTransactionError(cause: unknown): string {
+  const message = cause instanceof Error ? messageFromError(cause) : String(cause);
+  if (message.includes('MarketClosed')) return 'This round locked while you were confirming. Your draft is ready for the next round.';
+  if (message.includes('InvalidMarket') || message.includes('ActiveMarket')) return 'This round is no longer accepting bets.';
+  if (message.includes('InvalidStake')) return 'Enter a valid stake within the allowed range.';
+  if (message.toLowerCase().includes('user rejected')) return 'The wallet request was cancelled.';
+  return 'The position could not be submitted. Refresh the round and try again.';
+}
+
+function messageFromError(error: Error): string {
+  const cause = error as Error & { shortMessage?: string };
+  return cause.shortMessage ?? cause.message;
+}
+
+export function PlacePositionButton({ roomId, market, stale, outcome, amount, onConfirmed }: PlacePositionButtonProps) {
   const { address, isConnected, chainId } = useAccount();
   const [error, setError] = useState('');
   const [hash, setHash] = useState<`0x${string}`>();
   const [txState, setTxState] = useState<TransactionState>();
-  const [marketOpen, setMarketOpen] = useState<boolean | null>(null);
+  const submissionLock = useRef(false);
+  const submittedMarketId = useRef<string | null>(null);
   const { writeContractAsync } = useWriteContract();
   const publicClient = usePublicClient({ chainId: arbitrumSepolia.id });
-  const configured = Boolean(marketContractAddress && activeMarketId > 0n);
 
-  // A market must actually exist and be Open before a bet can succeed.
-  // Status enum: None=0, Open=2. Betting on a non-open market reverts on-chain.
-  useEffect(() => {
-    if (!publicClient || !configured) { setMarketOpen(null); return; }
-    let cancelled = false;
-    publicClient.readContract({
-      address: marketContractAddress,
-      abi: trafficMarketAbi,
-      functionName: 'getMarket',
-      args: [activeMarketId],
-    }).then((market) => {
-      if (cancelled) return;
-      // viem returns a struct as an object keyed by field name
-      const status = Number((market as { status?: number }).status ?? 0);
-      setMarketOpen(status === 2);
-    }).catch(() => { if (!cancelled) setMarketOpen(null); });
-    return () => { cancelled = true; };
-  }, [publicClient, configured]);
+  const amountValid = AMOUNT_PATTERN.test(amount) && Number(amount) >= Number(GAME_CONFIG.BETTING.MIN_ETH) && Number(amount) <= Number(GAME_CONFIG.BETTING.MAX_ETH);
+  const canonicalRoom = Boolean(market && market.roomKey.toLowerCase() === marketRoomKey(roomId).toLowerCase());
+  const nearLock = Boolean(market?.closeTime && market.closeTime - market.serverTime <= GAME_CONFIG.BETTING.SUBMISSION_GUARD_SECONDS);
+  const marketOpen = Boolean(market?.marketId && market.phase === 'open' && canonicalRoom && !nearLock && !stale);
+  const transactionBusy = txState === 'AWAITING_SIGNATURE' || txState === 'PENDING' || txState === 'SUBMITTED';
 
   useEffect(() => {
     if (!hash || !publicClient) return;
@@ -41,23 +54,66 @@ export function PlacePositionButton({ outcome, amount }: { outcome: number; amou
     setTxState(current => current === 'REPLACED' ? 'REPLACED' : 'PENDING');
     publicClient.waitForTransactionReceipt({ hash, confirmations: 1, onReplaced: ({ transaction }) => {
       if (!cancelled) { setHash(transaction.hash); setTxState('REPLACED'); }
-    }}).then((receipt) => { if (!cancelled) setTxState(receipt.status === 'success' ? 'CONFIRMED' : 'FAILED'); })
-      .catch((cause) => { if (!cancelled) setTxState(String(cause).includes('not found') ? 'DROPPED' : 'FAILED'); });
+    }}).then((receipt) => {
+      if (cancelled) return;
+      const confirmed = receipt.status === 'success';
+      setTxState(confirmed ? 'CONFIRMED' : 'FAILED');
+      if (confirmed) onConfirmed?.();
+    }).catch((cause) => {
+      if (!cancelled) setTxState(String(cause).includes('not found') ? 'DROPPED' : 'FAILED');
+    }).finally(() => { submissionLock.current = false; });
     return () => { cancelled = true; };
-  }, [hash, publicClient]);
+  }, [hash, onConfirmed, publicClient]);
+
+  useEffect(() => {
+    if (transactionBusy) return;
+    setError('');
+    if (submittedMarketId.current !== market?.marketId) {
+      setHash(undefined);
+      setTxState(undefined);
+      submittedMarketId.current = null;
+    }
+  }, [address, market?.marketId, transactionBusy]);
 
   async function place() {
-    setError(''); setTxState('AWAITING_SIGNATURE');
-    const session = await fetch(`${AUTH_API_URL}/auth/session`, { credentials: 'include' });
-    const sessionData = session.ok ? await session.json() as { address?: string } : null;
-    if (!sessionData?.address || sessionData.address.toLowerCase() !== address?.toLowerCase()) { setError('Sign in with this wallet first'); setTxState(undefined); return; }
-    if (!marketContractAddress || activeMarketId === 0n) { setError('Market contract is not configured'); setTxState(undefined); return; }
+    if (submissionLock.current || transactionBusy) return;
+    setError('');
+    if (!address || !publicClient || !market?.marketId || !marketOpen) {
+      setError(nearLock ? 'This round is locking. Keep your draft for the next round.' : 'Wait for the current round to finish synchronizing.');
+      return;
+    }
+    if (!amountValid) { setError(`Stake must be between ${GAME_CONFIG.BETTING.MIN_ETH} and ${GAME_CONFIG.BETTING.MAX_ETH} ETH.`); return; }
+    submissionLock.current = true;
+    submittedMarketId.current = market.marketId;
+    setTxState('AWAITING_SIGNATURE');
     try {
-      const submittedHash = await writeContractAsync({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'bet', args: [activeMarketId, outcome + 1], value: parseEther(String(amount)), chainId: arbitrumSepolia.id });
-      setHash(submittedHash); setTxState('SUBMITTED');
-    } catch (cause) { setError(cause instanceof Error ? cause.message.split('\n')[0] : 'Transaction rejected'); setTxState('FAILED'); }
+      const args = [BigInt(market.marketId), outcome + 1] as const;
+      const value = parseEther(amount);
+      await publicClient.simulateContract({ account: address, address: marketContractAddress, abi: trafficMarketAbi, functionName: 'bet', args, value });
+      const submittedHash = await writeContractAsync({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'bet', args, value, chainId: arbitrumSepolia.id });
+      setHash(submittedHash);
+      setTxState('SUBMITTED');
+    } catch (cause) {
+      submissionLock.current = false;
+      setError(friendlyTransactionError(cause));
+      setTxState('FAILED');
+    }
   }
-  const marketNotOpen = configured && marketOpen === false;
-  const label = !configured ? 'Contract deployment required' : !isConnected ? 'Connect wallet to bet' : chainId !== arbitrumSepolia.id ? 'Switch network to bet' : marketNotOpen ? `Market #${activeMarketId.toString()} not open` : txState === 'AWAITING_SIGNATURE' ? 'Confirm in wallet…' : txState === 'PENDING' || txState === 'SUBMITTED' ? 'Transaction pending…' : txState === 'CONFIRMED' ? 'Position opened' : 'Place position';
-  return <><button className="place-position" disabled={!configured || marketNotOpen || txState === 'AWAITING_SIGNATURE' || txState === 'PENDING' || txState === 'SUBMITTED'} onClick={place}>{label}</button>{txState && <TransactionStatus state={txState} hash={hash} />}{error && <p className="contract-error">{error}</p>}{marketNotOpen && <p className="contract-error">Market #{activeMarketId.toString()} does not exist or is not open. Create it via the MARKET_ROLE wallet (createMarket) before betting.</p>}</>;
+
+  const label = !isConnected ? 'Connect wallet to bet'
+    : chainId !== arbitrumSepolia.id ? 'Switch to Arbitrum Sepolia'
+      : stale ? 'Refreshing round…'
+        : !market?.enabled ? 'Rounds coming soon'
+          : nearLock ? 'Round locking…'
+            : !marketOpen ? 'Preparing next round…'
+              : !amountValid ? 'Enter a valid stake'
+                : txState === 'AWAITING_SIGNATURE' ? 'Confirm in wallet…'
+                  : txState === 'PENDING' || txState === 'SUBMITTED' ? 'Position pending…'
+                    : txState === 'CONFIRMED' ? 'Position opened' : `Place on round #${market.marketId}`;
+
+  return <>
+    <button className="place-position" disabled={!isConnected || chainId !== arbitrumSepolia.id || !marketOpen || !amountValid || transactionBusy} onClick={() => void place()}>{label}</button>
+    {txState && <TransactionStatus state={txState} hash={hash} />}
+    {error && <p className="contract-error" role="alert">{error}</p>}
+  </>;
 }

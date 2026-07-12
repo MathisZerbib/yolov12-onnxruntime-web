@@ -13,6 +13,9 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     bytes32 public constant MARKET_ROLE = keccak256("MARKET_ROLE");
     bytes32 public constant DISPUTE_ROLE = keccak256("DISPUTE_ROLE");
     uint16 public constant MAX_FEE_BPS = 1_000;
+    uint64 public constant MIN_BETTING_PERIOD = 1 minutes;
+    uint64 public constant MAX_BETTING_PERIOD = 1 days;
+    uint64 public constant MAX_RESOLUTION_PERIOD = 1 days;
     uint64 public constant CLAIM_PERIOD = 90 days;
     uint64 public constant CHALLENGE_PERIOD = 15 minutes;
     uint64 public constant DISPUTE_PERIOD = 7 days;
@@ -65,10 +68,16 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     mapping(uint256 => mapping(address => bool)) public claimed;
     mapping(address => uint256) public challengeRefunds;
     mapping(bytes32 => RoomZone) public roomZones;
+    mapping(bytes32 => uint256) public latestMarketIdByRoom;
     mapping(bytes32 => address) public roleAccount;
 
     function getMarket(uint256 marketId) external view returns (Market memory) {
         return markets[marketId];
+    }
+
+    function isMarketBettable(uint256 marketId) external view returns (bool) {
+        Market storage market = markets[marketId];
+        return !paused() && market.status == Status.Open && block.timestamp < market.closeTime;
     }
 
     error InvalidMarket();
@@ -81,6 +90,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     error TransferFailed();
     error UnauthorizedZoneAdmin();
     error StaleZoneConfiguration();
+    error ActiveMarketExists(uint256 marketId);
 
     event RoomZoneUpdated(bytes32 indexed roomId, uint32 indexed version, bytes32 indexed configHash);
     event MarketCreated(uint256 indexed marketId, bytes32 indexed roomId, uint64 closeTime, uint32 lowerBound, uint32 upperBound, uint32 exactTarget, uint32 zoneVersion, bytes32 zoneConfigHash);
@@ -171,10 +181,17 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         uint32 exactTarget,
         uint16 feeBps
     ) external onlyRole(MARKET_ROLE) whenNotPaused returns (uint256 marketId) {
-        if (roomId == bytes32(0) || closeTime <= block.timestamp || resolveDeadline <= closeTime ||
-            lowerBound > upperBound || feeBps > MAX_FEE_BPS) revert InvalidConfiguration();
+        if (roomId == bytes32(0) || closeTime < block.timestamp + MIN_BETTING_PERIOD ||
+            closeTime > block.timestamp + MAX_BETTING_PERIOD || resolveDeadline <= closeTime ||
+            resolveDeadline > closeTime + MAX_RESOLUTION_PERIOD || lowerBound > upperBound ||
+            exactTarget < lowerBound || exactTarget > upperBound || feeBps > MAX_FEE_BPS) revert InvalidConfiguration();
         RoomZone storage zone = roomZones[roomId];
         if (zone.version == 0) revert InvalidConfiguration();
+        uint256 previousMarketId = latestMarketIdByRoom[roomId];
+        if (previousMarketId != 0) {
+            Market storage previous = markets[previousMarketId];
+            if (previous.status == Status.Open && block.timestamp < previous.closeTime) revert ActiveMarketExists(previousMarketId);
+        }
 
         marketId = nextMarketId++;
         Market storage market = markets[marketId];
@@ -188,6 +205,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         market.zoneConfigHash = zone.configHash;
         market.feeBps = feeBps;
         market.status = Status.Open;
+        latestMarketIdByRoom[roomId] = marketId;
         emit MarketCreated(marketId, roomId, closeTime, lowerBound, upperBound, exactTarget, zone.version, zone.configHash);
     }
 

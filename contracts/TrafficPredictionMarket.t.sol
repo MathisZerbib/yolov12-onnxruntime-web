@@ -19,6 +19,7 @@ contract TrafficPredictionMarketTest {
     address private constant CHALLENGER = address(0x2003);
     Vm private constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
     bytes32 private constant TOKYO = keccak256("tokyo");
+    bytes32 private constant PARIS = keccak256("paris");
 
     TrafficPredictionMarket private market;
 
@@ -103,6 +104,56 @@ contract TrafficPredictionMarketTest {
         _setTokyoZone();
         TrafficPredictionMarket.Market memory unchanged = market.getMarket(marketId);
         require(unchanged.zoneVersion == 1 && unchanged.zoneConfigHash == firstHash, "open market zone mutated");
+    }
+
+    function testRoomHasOnlyOneBettableMarketAndAdvancesSequentially() public {
+        _setTokyoZone();
+        uint64 firstClose = uint64(block.timestamp + 5 minutes);
+        vm.prank(MARKET_OPERATOR);
+        uint256 firstId = market.createMarket(TOKYO, firstClose, firstClose + 10 minutes, 10, 30, 20, 200);
+        require(market.latestMarketIdByRoom(TOKYO) == firstId, "room pointer did not select first market");
+
+        vm.prank(MARKET_OPERATOR);
+        try market.createMarket(TOKYO, firstClose + 5 minutes, firstClose + 15 minutes, 10, 30, 20, 200) {
+            revert("overlapping market accepted");
+        } catch {}
+
+        vm.warp(firstClose);
+        uint64 secondClose = uint64(block.timestamp + 5 minutes);
+        vm.prank(MARKET_OPERATOR);
+        uint256 secondId = market.createMarket(TOKYO, secondClose, secondClose + 10 minutes, 10, 30, 20, 200);
+        require(secondId == firstId + 1, "market sequence is not monotonic");
+        require(market.latestMarketIdByRoom(TOKYO) == secondId, "room pointer did not advance");
+        require(market.getMarket(firstId).status == TrafficPredictionMarket.Status.Open, "previous settlement state was mutated");
+    }
+
+    function testMarketTimingAndTargetsAreBounded() public {
+        _setTokyoZone();
+        uint64 tooSoon = uint64(block.timestamp + market.MIN_BETTING_PERIOD() - 1);
+        vm.prank(MARKET_OPERATOR);
+        try market.createMarket(TOKYO, tooSoon, tooSoon + 10 minutes, 10, 30, 20, 200) {
+            revert("too-short betting window accepted");
+        } catch {}
+
+        uint64 closeTime = uint64(block.timestamp + 5 minutes);
+        vm.prank(MARKET_OPERATOR);
+        try market.createMarket(TOKYO, closeTime, closeTime + 10 minutes, 10, 30, 31, 200) {
+            revert("exact target outside market range accepted");
+        } catch {}
+    }
+
+    function testDifferentRoomsCanAcceptBetsConcurrently() public {
+        _setTokyoZone();
+        vm.prank(ADMIN);
+        market.setRoomZone(PARIS, _geometry());
+        uint64 closeTime = uint64(block.timestamp + 5 minutes);
+        vm.prank(MARKET_OPERATOR);
+        uint256 tokyoId = market.createMarket(TOKYO, closeTime, closeTime + 10 minutes, 10, 30, 20, 200);
+        vm.prank(MARKET_OPERATOR);
+        uint256 parisId = market.createMarket(PARIS, closeTime, closeTime + 10 minutes, 10, 30, 20, 200);
+        require(market.latestMarketIdByRoom(TOKYO) == tokyoId, "Tokyo pointer changed");
+        require(market.latestMarketIdByRoom(PARIS) == parisId, "Paris pointer missing");
+        require(market.isMarketBettable(tokyoId) && market.isMarketBettable(parisId), "concurrent room market not bettable");
     }
 
     function testOracleCannotResolveWithChangedZone() public {

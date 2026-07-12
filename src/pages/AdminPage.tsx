@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom';
 import { ArrowLeft, ArrowUpRight, Crosshair, KeyRound, LockKeyhole, Rocket, ScanLine, ShieldCheck } from 'lucide-react';
 import { usePublicClient } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
+import { keccak256, toBytes } from 'viem';
 import { WalletButton } from '@/components/wallet-button';
 import { PLATFORM_ADMIN_ADDRESS } from '@/config/detection-zone';
-import { marketContractAddress } from '@/lib/market-contract';
+import { marketContractAddress, trafficMarketAbi } from '@/lib/market-contract';
 
 export default function AdminPage() {
   const publicClient = usePublicClient({ chainId: arbitrumSepolia.id });
@@ -13,9 +14,20 @@ export default function AdminPage() {
   useEffect(() => {
     if (!publicClient) return;
     let cancelled = false;
-    publicClient.getCode({ address: marketContractAddress }).then(code => {
-      if (!cancelled) setCompatible(Boolean(code?.toLowerCase().includes('a0d9a4b5')));
-    }).catch(() => { if (!cancelled) setCompatible(false); });
+    setCompatible(null);
+    publicClient.readContract({
+      address: marketContractAddress,
+      abi: trafficMarketAbi,
+      functionName: 'roomZones',
+      args: [keccak256(toBytes('__compat_check__'))],
+    }).then(() => {
+      if (!cancelled) setCompatible(true);
+    }).catch((error) => {
+      if (!cancelled) {
+        const msg = error instanceof Error ? error.message : '';
+        setCompatible(!msg.includes('function not found') && !msg.includes('missing revert data'));
+      }
+    });
     return () => { cancelled = true; };
   }, [publicClient]);
 

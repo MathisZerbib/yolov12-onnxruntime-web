@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, FileKey2, Loader2, Plus, RefreshCw, ShieldCheck } from 'lucide-react';
 import { concat, createWalletClient, http, keccak256, toBytes, type Hex, type WalletClient } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -55,6 +55,13 @@ export function MarketCreatePanel() {
   const [nextId, setNextId] = useState<bigint | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  useEffect(() => {
+    const saved = localStorage.getItem('savedMarketOperatorPrivateKey');
+    if (saved && saved.length === 64) {
+      setNotice('Vault operator ready (saved locally).');
+    }
+  }, []);
+
   async function decryptKeystore() {
     if (unlocking) return;
     if (!keystoreFile || keystorePassword.length < 1) {
@@ -92,7 +99,8 @@ export function MarketCreatePanel() {
       const decrypted = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CTR', counter: toBufferSource(iv), length: 128 }, aesKey, toBufferSource(ciphertext)));
       const computedMac = keccak256(concat([derived.slice(16, 32), ciphertext]));
       if (computedMac.toLowerCase() !== `0x${mac}`) throw new Error('Wrong backup password or damaged keystore');
-      const privateKey = `0x${bytesToHex(decrypted)}` as Hex;
+      const privateKeyHex = bytesToHex(decrypted);
+      const privateKey = `0x${privateKeyHex}` as Hex;
       const account = privateKeyToAccount(privateKey);
       const walletClient = createWalletClient({
         account,
@@ -101,9 +109,15 @@ export function MarketCreatePanel() {
       });
       decrypted.fill(0);
       derived.fill(0);
+      await fetch('/__crossflow_update_env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ MARKET_OPERATOR_PRIVATE_KEY: privateKeyHex }),
+      });
       setOperator({ address: account.address, client: walletClient, account: account.address });
       setKeystorePassword('');
       setNotice('Market-operator wallet unlocked. Configure the market and create it.');
+      localStorage.setItem('savedMarketOperatorPrivateKey', privateKeyHex);
     } catch (error) {
       setOperator(null);
       setNotice(error instanceof Error ? error.message : 'Keystore decryption failed');
@@ -142,13 +156,26 @@ export function MarketCreatePanel() {
       const closeTime = BigInt(nowSeconds + Number(form.closeInMinutes) * 60);
       const resolveDeadline = BigInt(nowSeconds + Number(form.resolveInMinutes) * 60);
       const lower = Number(form.lowerBound), upper = Number(form.upperBound), exact = Number(form.exactTarget);
-      const txHash = await operator.client.writeContract({
+      const roomKeyBytes = form.roomId as `0x${string}`;
+
+      const [paused, hasRole, zoneData] = await Promise.all([
+        publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'paused' }),
+        publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'hasRole', args: [keccak256(toBytes('MARKET_ROLE')), operator.address] }),
+        publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'roomZones', args: [roomKeyBytes] }),
+      ]);
+
+      if (paused) throw new Error('Contract is paused. Unpause it before creating markets.');
+      if (!hasRole) throw new Error('Operator wallet does not have MARKET_ROLE. Use the market-operator keystore generated during deployment.');
+
+      const zoneVersion = (zoneData as readonly [readonly number[], number, `0x${string}`])[1];
+      if (zoneVersion === 0) throw new Error('Room zone is not configured on-chain. Open Admin > Zones and publish the zone first.');
+
+      const txHash = await (operator.client as unknown as { writeContract: (params: { address: `0x${string}`; abi: readonly unknown[]; functionName: string; args: readonly unknown[]; chain: typeof arbitrumSepolia }) => Promise<`0x${string}`> }).writeContract({
         address: marketContractAddress,
         abi: trafficMarketAbi,
-        account: operator.account,
         functionName: 'createMarket',
         args: [
-          form.roomId as `0x${string}`,
+          roomKeyBytes,
           closeTime,
           resolveDeadline,
           lower,
@@ -160,11 +187,16 @@ export function MarketCreatePanel() {
       });
       setNotice(`Market creation submitted: ${txHash.slice(0, 12)}…`);
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: 1 });
-      if (receipt.status !== 'success') throw new Error('Market creation reverted');
-      const refreshedNextId = await publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' }) as bigint;
+      if (receipt.status !== 'success') {
+        console.error(JSON.stringify({ event: 'create_market_reverted', txHash, receipt }));
+        throw new Error('Market creation reverted');
+      }
+      const [refreshedNextId, createdId] = await Promise.all([
+        publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' }),
+        publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'latestMarketIdByRoom', args: [roomKeyBytes] }),
+      ]);
       setNextId(refreshedNextId);
-      const createdId = refreshedNextId - 1n;
-      setNotice(`Market #${createdId.toString()} created and is now Open. Set VITE_ACTIVE_MARKET_ID=${createdId.toString()} to bet on it.`);
+      setNotice(`Market #${createdId.toString()} created and is now open. Players in this room will discover it automatically.`);
       setForm(emptyState());
     } catch (error) {
       setNotice(error instanceof Error ? error.message.split('\n')[0] : 'Market creation failed');
