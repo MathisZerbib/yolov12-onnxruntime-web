@@ -11,7 +11,7 @@
     "MARKET_RPC_URL": "https://sepolia-rollup.arbitrum.io/rpc",
     "MARKET_CONTRACT_ADDRESS": "0x500e7b71294ed4c79dc7c4cdae8e14f233c165a0",
     "AUTO_MARKET_ROOMS": "tokyo,sydney,sf,paris,nyc,london",
-    "MARKET_BETTING_WINDOW_SECONDS": "300",
+    "MARKET_BETTING_WINDOW_SECONDS": "30",
     "MARKET_RESOLUTION_WINDOW_SECONDS": "600",
     "MARKET_LOWER_BOUND": "10",
     "MARKET_UPPER_BOUND": "30",

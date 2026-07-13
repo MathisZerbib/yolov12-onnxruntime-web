@@ -118,7 +118,7 @@ function sessionCookieName(env: Env): string {
 
 function corsHeaders(request: Request, env: Env): HeadersInit {
   const origin = request.headers.get('origin');
-  return origin === env.APP_ORIGIN ? {
+  return origin && isAllowedOrigin(origin, env) ? {
     'access-control-allow-origin': origin,
     'access-control-allow-credentials': 'true',
     'access-control-allow-headers': 'content-type,x-room-lease',
@@ -127,8 +127,18 @@ function corsHeaders(request: Request, env: Env): HeadersInit {
   } : {};
 }
 
+function isAllowedOrigin(origin: string, env: Env): boolean {
+  if (origin === env.APP_ORIGIN) return true;
+  if (String(env.ENVIRONMENT) === 'production') return false;
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+  } catch { return false; }
+}
+
 function assertOrigin(request: Request, env: Env): boolean {
-  return request.headers.get('origin') === env.APP_ORIGIN;
+  const origin = request.headers.get('origin');
+  return Boolean(origin && isAllowedOrigin(origin, env));
 }
 
 async function sessionAddress(request: Request, env: Env): Promise<string | null> {

@@ -121,7 +121,7 @@ contract TrafficPredictionMarketTest {
         require(unchanged.zoneVersion == 1 && unchanged.zoneConfigHash == firstHash, "open market zone mutated");
     }
 
-    function testRoomHasOnlyOneBettableMarketAndAdvancesSequentially() public {
+    function testRoomSupportsRollingMarketsAndAdvancesSequentially() public {
         _setTokyoZone();
         uint64 firstClose = uint64(block.timestamp + 5 minutes);
         vm.prank(MARKET_OPERATOR);
@@ -129,15 +129,15 @@ contract TrafficPredictionMarketTest {
         require(market.latestMarketIdByRoom(TOKYO) == firstId, "room pointer did not select first market");
 
         vm.prank(MARKET_OPERATOR);
-        try market.createMarket(TOKYO, firstClose + 5 minutes, firstClose + 15 minutes, 10, 30, 20, 200) {
-            revert("overlapping market accepted");
-        } catch {}
+        uint256 rollingId = market.createMarket(TOKYO, firstClose + 5 minutes, firstClose + 15 minutes, 10, 30, 20, 200);
+        require(rollingId == firstId + 1, "rolling market was not created");
+        require(market.latestMarketIdByRoom(TOKYO) == rollingId, "latest pointer did not advance to rolling market");
 
         vm.warp(firstClose);
         uint64 secondClose = uint64(block.timestamp + 5 minutes);
         vm.prank(MARKET_OPERATOR);
         uint256 secondId = market.createMarket(TOKYO, secondClose, secondClose + 10 minutes, 10, 30, 20, 200);
-        require(secondId == firstId + 1, "market sequence is not monotonic");
+        require(secondId == rollingId + 1, "market sequence is not monotonic");
         require(market.latestMarketIdByRoom(TOKYO) == secondId, "room pointer did not advance");
         require(market.getMarket(firstId).status == TrafficPredictionMarket.Status.Open, "previous settlement state was mutated");
     }

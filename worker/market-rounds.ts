@@ -16,8 +16,10 @@ import { arbitrumSepolia } from 'viem/chains';
 const MARKET_ROLE = keccak256(toBytes('MARKET_ROLE'));
 const RETRY_DELAY_MS = 30_000;
 const CONFIG_RETRY_DELAY_MS = 120_000;
+const NEXT_ROUND_LEAD_SECONDS = 10;
 const UINT32_MAX = 4_294_967_295;
 const AUTOMATION_REGISTRY_SELECTOR = 'a70502d5';
+const ROLLING_MARKETS_SELECTOR = '15727a61';
 const MARKET_CREATED_EVENT = parseAbiItem('event MarketCreated(uint256 indexed marketId, bytes32 indexed roomId, uint64 closeTime, uint32 lowerBound, uint32 upperBound, uint32 exactTarget, uint32 zoneVersion, bytes32 zoneConfigHash)');
 
 class SchedulerConfigurationError extends Error {}
@@ -42,6 +44,7 @@ const trafficMarketAbi = [
     { name: 'feeBps', type: 'uint16' },
   ], outputs: [{ name: '', type: 'uint256' }] },
   { type: 'function', name: 'nextMarketId', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
+  { type: 'function', name: 'MIN_BETTING_PERIOD', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint64' }] },
   { type: 'function', name: 'roomZones', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [
     { name: 'topLeftXBps', type: 'uint16' }, { name: 'topLeftYBps', type: 'uint16' },
     { name: 'topRightXBps', type: 'uint16' }, { name: 'topRightYBps', type: 'uint16' },
@@ -139,7 +142,7 @@ function getMarketConfig(env: Env): MarketConfig {
     contractAddress: getAddress(env.MARKET_CONTRACT_ADDRESS),
     rpcUrl: env.MARKET_RPC_URL,
     enabledRooms,
-    bettingWindowSeconds: boundedInteger(env.MARKET_BETTING_WINDOW_SECONDS, 'betting window', 60, 86_400),
+    bettingWindowSeconds: boundedInteger(env.MARKET_BETTING_WINDOW_SECONDS, 'betting window', 15, 86_400),
     resolutionWindowSeconds: boundedInteger(env.MARKET_RESOLUTION_WINDOW_SECONDS, 'resolution window', 60, 86_400),
     lowerBound,
     upperBound,
@@ -160,10 +163,14 @@ function phaseFor(status: number, closeTime: number, nowSeconds: number): Player
 async function inspectAutomationContract(
   publicClient: ReturnType<typeof createPublicClient>,
   contractAddress: `0x${string}`,
-): Promise<{ hasRoomRegistry: boolean }> {
+): Promise<{ hasRoomRegistry: boolean; supportsRollingMarkets: boolean }> {
   const code = await publicClient.getCode({ address: contractAddress });
   if (!code || code === '0x') throw new SchedulerConfigurationError(`No contract is deployed at ${contractAddress}`);
-  return { hasRoomRegistry: code.toLowerCase().includes(AUTOMATION_REGISTRY_SELECTOR) };
+  const normalizedCode = code.toLowerCase();
+  return {
+    hasRoomRegistry: normalizedCode.includes(AUTOMATION_REGISTRY_SELECTOR),
+    supportsRollingMarkets: normalizedCode.includes(ROLLING_MARKETS_SELECTOR),
+  };
 }
 
 async function findLatestMarketId(
@@ -314,8 +321,9 @@ export class MarketScheduler extends DurableObject<Env> {
     }
 
     const capabilityClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
+    let contractCapabilities: { hasRoomRegistry: boolean; supportsRollingMarkets: boolean };
     try {
-      await inspectAutomationContract(capabilityClient, config.contractAddress);
+      contractCapabilities = await inspectAutomationContract(capabilityClient, config.contractAddress);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Contract capability check failed';
       console.warn(JSON.stringify({ event: 'market_scheduler_blocked', contractAddress: config.contractAddress, error: message }));
@@ -331,7 +339,10 @@ export class MarketScheduler extends DurableObject<Env> {
       try {
         const result = await this.ensureBettingRound(config, roomId);
         if (result.created) created++;
-        if (result.closeTime) nextAlarm = Math.min(nextAlarm, result.closeTime * 1_000 + 1_000);
+        if (result.closeTime) {
+          const lead = contractCapabilities.supportsRollingMarkets ? NEXT_ROUND_LEAD_SECONDS : -1;
+          nextAlarm = Math.min(nextAlarm, (result.closeTime - lead) * 1_000);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown scheduler error';
         this.record(roomId, null, null, null, message);
@@ -360,8 +371,12 @@ export class MarketScheduler extends DurableObject<Env> {
     let authorizedOperator: Hex;
     // First verify contract connectivity with a simpler call
     let nextMarketId: bigint;
+    let contractMinimumBettingPeriod: bigint;
     try {
-      nextMarketId = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' });
+      [nextMarketId, contractMinimumBettingPeriod] = await Promise.all([
+        publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' }),
+        publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'MIN_BETTING_PERIOD' }),
+      ]);
     } catch (connectivityError) {
       const connectivityErrorMsg = connectivityError instanceof Error ? connectivityError.message : 'unknown';
       console.error(JSON.stringify({
@@ -410,7 +425,8 @@ export class MarketScheduler extends DurableObject<Env> {
         if (roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase()) {
           const closeTime = Number(marketTuple[1]);
           const status = marketTuple[13] as number;
-          if (status === 1 && closeTime > Math.floor(Date.now() / 1_000)) {
+          const leadSeconds = capabilities.supportsRollingMarkets ? NEXT_ROUND_LEAD_SECONDS : 0;
+          if (status === 1 && closeTime > Math.floor(Date.now() / 1_000) + leadSeconds) {
             this.record(roomId, latestMarketId.toString(), closeTime, null, null);
             return { created: false, marketId: latestMarketId.toString(), closeTime };
           }
@@ -441,7 +457,10 @@ export class MarketScheduler extends DurableObject<Env> {
     }
 
     const now = Math.floor(Date.now() / 1_000);
-    const closeTime = now + config.bettingWindowSeconds;
+    // Deployments may enforce a larger minimum than the current Worker config.
+    // Two seconds absorb RPC/block timestamp drift at the exact boundary.
+    const effectiveBettingWindow = Math.max(config.bettingWindowSeconds, Number(contractMinimumBettingPeriod) + 2);
+    const closeTime = now + effectiveBettingWindow;
     const resolveDeadline = closeTime + config.resolutionWindowSeconds;
     const simulation = await publicClient.simulateContract({
       account,

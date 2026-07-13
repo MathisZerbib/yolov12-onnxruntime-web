@@ -13,7 +13,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     bytes32 public constant MARKET_ROLE = keccak256("MARKET_ROLE");
     bytes32 public constant DISPUTE_ROLE = keccak256("DISPUTE_ROLE");
     uint16 public constant MAX_FEE_BPS = 1_000;
-    uint64 public constant MIN_BETTING_PERIOD = 1 minutes;
+    uint64 public constant MIN_BETTING_PERIOD = 15 seconds;
     uint64 public constant MAX_BETTING_PERIOD = 1 days;
     uint64 public constant MAX_RESOLUTION_PERIOD = 1 days;
     uint64 public constant CLAIM_PERIOD = 90 days;
@@ -24,6 +24,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     uint16 public constant RANGE_MULTIPLIER_BPS = 17_500;
     uint16 public constant OVER_MULTIPLIER_BPS = 20_000;
     uint16 public constant EXACT_MULTIPLIER_BPS = 30_000;
+    bool public constant ROLLING_MARKETS = true;
 
     enum Outcome { None, Under, Range, Over, Exact }
     enum Status { None, Open, Proposed, Challenged, Resolved, Cancelled }
@@ -226,12 +227,6 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
             exactTarget < lowerBound || exactTarget > upperBound || feeBps > MAX_FEE_BPS) revert InvalidConfiguration();
         RoomZone storage zone = roomZones[roomId];
         if (zone.version == 0) revert InvalidConfiguration();
-        uint256 previousMarketId = latestMarketIdByRoom[roomId];
-        if (previousMarketId != 0) {
-            Market storage previous = markets[previousMarketId];
-            if (previous.status == Status.Open && block.timestamp < previous.closeTime) revert ActiveMarketExists(previousMarketId);
-        }
-
         marketId = nextMarketId++;
         Market storage market = markets[marketId];
         market.roomId = roomId;

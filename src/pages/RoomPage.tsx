@@ -54,7 +54,9 @@ export default function RoomPage() {
   const [zoneLoading, setZoneLoading] = useState(true);
   const [detectionSurface, setDetectionSurface] = useState({ width: 1280, height: 720 });
   const [countRipples, setCountRipples] = useState<DetectionCountRipple[]>([]);
-  const { market, loading: marketLoading, stale: marketStale, error: marketError, syncedAt, refresh: refreshMarket } = useRoomMarket(roomId);
+  const [personalRunEndsAt, setPersonalRunEndsAt] = useState<number | null>(null);
+  const [personalFinalCount, setPersonalFinalCount] = useState<number | null>(null);
+  const { market, loading: marketLoading, stale: marketStale, error: marketError, refresh: refreshMarket } = useRoomMarket(roomId);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
@@ -420,6 +422,8 @@ export default function RoomPage() {
   }, [roomId]);
 
   const handlePositionConfirmed = useCallback(() => {
+    setPersonalFinalCount(null);
+    setPersonalRunEndsAt(Date.now() + 30_000);
     autoStartRequestedRef.current = true;
     if (!processingRef.current) void startProcessing();
   }, [startProcessing]);
@@ -427,6 +431,14 @@ export default function RoomPage() {
   useEffect(() => {
     if (autoStartRequestedRef.current && isReady && detectorReady && detectionZone && !processingRef.current) void startProcessing();
   }, [detectionZone, detectorReady, isReady, startProcessing]);
+
+  useEffect(() => {
+    if (personalRunEndsAt !== null && clock >= personalRunEndsAt) {
+      setPersonalFinalCount(counterRef.current.getTotalCount());
+      if (processingRef.current) stopProcessing();
+      setPersonalRunEndsAt(null);
+    }
+  }, [clock, personalRunEndsAt, stopProcessing]);
 
   if (!room) {
     return (
@@ -439,8 +451,7 @@ export default function RoomPage() {
     );
   }
 
-  const serverNow = market ? market.serverTime + Math.max(0, Math.floor((clock - syncedAt) / 1_000)) : Math.floor(clock / 1_000);
-  const secondsRemaining = market?.closeTime ? Math.max(0, market.closeTime - serverNow) : 0;
+  const personalSecondsRemaining = personalRunEndsAt === null ? null : Math.max(0, Math.ceil((personalRunEndsAt - clock) / 1_000));
 
   return (
     <LazyMotion features={domAnimation} strict>
@@ -494,7 +505,7 @@ export default function RoomPage() {
           <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>{detectionZone ? `Admin zone v${detectionZone.version} · enter + leave to count` : 'Admin zone unavailable'}</span><span>CONFIDENCE ≥ 50%</span></footer>
         </section>
 
-        <RoomBettingConsole roomId={room.id} market={market} marketLoading={marketLoading} marketStale={marketStale} marketError={marketError} secondsRemaining={secondsRemaining} onRefresh={refreshMarket} onPositionConfirmed={handlePositionConfirmed} />
+        <RoomBettingConsole roomId={room.id} market={market} marketLoading={marketLoading} marketStale={marketStale} marketError={marketError} personalSecondsRemaining={personalSecondsRemaining} personalFinalCount={personalFinalCount} onRefresh={refreshMarket} onPositionConfirmed={handlePositionConfirmed} />
       </div>
     </main>
     </LazyMotion>

@@ -44,8 +44,7 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
 
   const amountValid = AMOUNT_PATTERN.test(amount) && Number(amount) >= Number(GAME_CONFIG.BETTING.MIN_ETH) && Number(amount) <= Number(GAME_CONFIG.BETTING.MAX_ETH);
   const canonicalRoom = Boolean(market && market.roomKey.toLowerCase() === marketRoomKey(roomId).toLowerCase());
-  const nearLock = Boolean(market?.closeTime && market.closeTime - market.serverTime <= GAME_CONFIG.BETTING.SUBMISSION_GUARD_SECONDS);
-  const marketOpen = Boolean(market?.marketId && market.phase === 'open' && canonicalRoom && !nearLock && !stale);
+  const marketOpen = Boolean(market?.marketId && market.phase === 'open' && canonicalRoom && !stale);
   const transactionBusy = txState === 'AWAITING_SIGNATURE' || txState === 'PENDING' || txState === 'SUBMITTED';
 
   useEffect(() => {
@@ -79,7 +78,7 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
     if (submissionLock.current || transactionBusy) return;
     setError('');
     if (!address || !publicClient || !market?.marketId || !marketOpen) {
-      setError(nearLock ? 'This round is locking. Keep your draft for the next round.' : 'Wait for the current round to finish synchronizing.');
+      setError('Opening a fresh game. Your bet draft is preserved—try again in a moment.');
       return;
     }
     if (!amountValid) { setError(`Stake must be between ${GAME_CONFIG.BETTING.MIN_ETH} and ${GAME_CONFIG.BETTING.MAX_ETH} ETH.`); return; }
@@ -104,8 +103,7 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
     : chainId !== arbitrumSepolia.id ? 'Switch to Arbitrum Sepolia'
       : stale ? 'Refreshing round…'
         : !market?.enabled ? 'Rounds coming soon'
-          : nearLock ? 'Round locking…'
-            : !marketOpen ? 'Preparing next round…'
+          : !marketOpen ? 'Opening your game…'
               : !amountValid ? 'Enter a valid stake'
                 : txState === 'AWAITING_SIGNATURE' ? 'Confirm in wallet…'
                   : txState === 'PENDING' || txState === 'SUBMITTED' ? 'Position pending…'

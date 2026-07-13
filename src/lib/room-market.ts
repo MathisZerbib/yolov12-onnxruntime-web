@@ -59,7 +59,8 @@ export function useRoomMarket(roomId: string | undefined) {
       if (sequence !== requestSequence.current) return;
       const message = error instanceof DOMException && error.name === 'AbortError'
         ? 'Round synchronization timed out'
-        : error instanceof Error ? error.message : 'Round synchronization failed';
+        : error instanceof TypeError ? 'Could not reach the local game API. Keep npm run dev running, then retry.'
+          : error instanceof Error ? error.message : 'Round synchronization failed';
       setSnapshot(current => ({ ...current, loading: false, stale: current.market !== null, error: message }));
     } finally {
       window.clearTimeout(timeout);
