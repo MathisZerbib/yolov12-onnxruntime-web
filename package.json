@@ -45,7 +45,8 @@
     "react-router-dom": "^7.18.1",
     "tailwind-merge": "^3.3.1",
     "viem": "^2.55.0",
-    "wagmi": "^3.7.1"
+    "wagmi": "^3.7.1",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260711.1",

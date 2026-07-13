@@ -25,6 +25,9 @@ contract TrafficPredictionMarketTest {
 
     function setUp() public {
         market = new TrafficPredictionMarket(ADMIN, ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER);
+        vm.deal(ADMIN, 100 ether);
+        vm.prank(ADMIN);
+        market.fundLiquidity{value: 100 ether}();
     }
 
     function testConstructorPinsPlatformAdmin() public {
@@ -48,6 +51,18 @@ contract TrafficPredictionMarketTest {
         require(tlx == 1_000 && tly == 2_500 && trx == 9_000 && try_ == 2_500 && brx == 10_000 && bry == 10_000 && blx == 0 && bly == 10_000, "zone coordinates differ");
         require(version == 1, "first zone version is not one");
         require(configHash == keccak256(abi.encode(TOKYO, _geometry())), "zone hash differs");
+    }
+
+    function testAdminPublishesAllZonesAtomically() public {
+        bytes32[] memory rooms = new bytes32[](2);
+        rooms[0] = TOKYO; rooms[1] = PARIS;
+        uint16[8][] memory geometries = new uint16[8][](2);
+        geometries[0] = _geometry(); geometries[1] = _geometry();
+        vm.prank(ADMIN);
+        market.setRoomZones(rooms, geometries);
+        (,,,,,,,, uint32 tokyoVersion,) = market.roomZones(TOKYO);
+        (,,,,,,,, uint32 parisVersion,) = market.roomZones(PARIS);
+        require(tokyoVersion == 1 && parisVersion == 1, "batch zone publication failed");
     }
 
     function testAdminAtomicallyRotatesOperationalRole() public {
@@ -181,7 +196,7 @@ contract TrafficPredictionMarketTest {
         require(proposed.evidenceHash == evidenceHash, "evidence hash differs");
     }
 
-    function testParimutuelPoolPaysOnlyWinningStake() public {
+    function testFixedRangeReturnPaysGuaranteedMultiplier() public {
         uint64 closeTime = uint64(block.timestamp + 60);
         uint256 marketId = _createTokyoMarket(closeTime, 250);
         vm.deal(ALICE, 2 ether);
@@ -195,16 +210,79 @@ contract TrafficPredictionMarketTest {
         TrafficPredictionMarket.Market memory resolved = market.getMarket(marketId);
         require(resolved.status == TrafficPredictionMarket.Status.Resolved, "market not resolved");
         require(resolved.winner == TrafficPredictionMarket.Outcome.Range, "wrong winner");
-        require(market.protocolFees() == 0.05 ether, "wrong protocol fee");
+        require(market.protocolFees() == 0.00625 ether, "wrong protocol fee");
 
         uint256 beforeClaim = ALICE.balance;
         vm.prank(ALICE);
         market.claim(marketId);
-        require(ALICE.balance - beforeClaim == 1.95 ether, "wrong pari-mutuel payout");
+        require(ALICE.balance - beforeClaim == 1.75 ether, "wrong fixed return");
         vm.prank(BOB);
         try market.claim(marketId) { revert("loser claimed funds"); } catch {}
         vm.prank(ALICE);
         try market.claim(marketId) { revert("winner claimed twice"); } catch {}
+    }
+
+    function testFixedMultipliersAndLiquidityGuard() public {
+        require(market.multiplierBps(TrafficPredictionMarket.Outcome.Under) == 15_000, "under multiplier changed");
+        require(market.multiplierBps(TrafficPredictionMarket.Outcome.Range) == 17_500, "range multiplier changed");
+        require(market.multiplierBps(TrafficPredictionMarket.Outcome.Over) == 20_000, "over multiplier changed");
+        require(market.multiplierBps(TrafficPredictionMarket.Outcome.Exact) == 30_000, "exact multiplier changed");
+
+        uint64 closeTime = uint64(block.timestamp + 60);
+        uint256 marketId = _createTokyoMarket(closeTime, 200);
+        vm.deal(ALICE, 2 ether);
+        vm.prank(ALICE);
+        market.bet{value: 1 ether}(marketId, TrafficPredictionMarket.Outcome.Exact);
+        _proposeAndFinalize(marketId, closeTime, 7);
+        uint256 beforeClaim = ALICE.balance;
+        vm.prank(ALICE);
+        market.claim(marketId);
+        require(ALICE.balance - beforeClaim == 3 ether, "exact return is not guaranteed at 3x");
+
+        TrafficPredictionMarket emptyMarket = new TrafficPredictionMarket(ADMIN, ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER);
+        vm.prank(ADMIN);
+        emptyMarket.setRoomZone(TOKYO, _geometry());
+        vm.prank(MARKET_OPERATOR);
+        uint256 unfundedId = emptyMarket.createMarket(TOKYO, uint64(block.timestamp + 60), uint64(block.timestamp + 1 days), 5, 10, 7, 200);
+        vm.deal(BOB, 1 ether);
+        vm.prank(BOB);
+        try emptyMarket.bet{value: 1 ether}(unfundedId, TrafficPredictionMarket.Outcome.Exact) {
+            revert("unfunded fixed return accepted");
+        } catch {}
+    }
+
+    function testUnderAndOverReturnsAreGuaranteed() public {
+        _setTokyoZone();
+        vm.prank(ADMIN);
+        market.setRoomZone(PARIS, _geometry());
+        uint64 closeTime = uint64(block.timestamp + 60);
+        vm.prank(MARKET_OPERATOR);
+        uint256 underMarket = market.createMarket(TOKYO, closeTime, closeTime + 1 days, 5, 10, 7, 200);
+        vm.prank(MARKET_OPERATOR);
+        uint256 overMarket = market.createMarket(PARIS, closeTime, closeTime + 1 days, 5, 10, 7, 200);
+        vm.deal(ALICE, 3 ether);
+        vm.prank(ALICE);
+        market.bet{value: 1 ether}(underMarket, TrafficPredictionMarket.Outcome.Under);
+        vm.prank(ALICE);
+        market.bet{value: 1 ether}(overMarket, TrafficPredictionMarket.Outcome.Over);
+        _proposeAndFinalize(underMarket, closeTime, 4);
+        uint256 afterFirstFinalization = block.timestamp;
+        bytes32 parisHash = market.getMarket(overMarket).zoneConfigHash;
+        vm.prank(ORACLE);
+        market.proposeResult(overMarket, 11, keccak256("over-manifest"), parisHash);
+        TrafficPredictionMarket.Market memory proposed = market.getMarket(overMarket);
+        vm.warp(proposed.challengeDeadline + 1);
+        market.finalizeResult(overMarket);
+        require(block.timestamp > afterFirstFinalization, "second market did not finalize");
+
+        uint256 beforeUnder = ALICE.balance;
+        vm.prank(ALICE);
+        market.claim(underMarket);
+        require(ALICE.balance - beforeUnder == 1.5 ether, "under return is not guaranteed at 1.5x");
+        uint256 beforeOver = ALICE.balance;
+        vm.prank(ALICE);
+        market.claim(overMarket);
+        require(ALICE.balance - beforeOver == 2 ether, "over return is not guaranteed at 2x");
     }
 
     function testNoWinnerCancelsAndRefundsEveryStake() public {

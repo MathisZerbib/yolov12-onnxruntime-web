@@ -6,7 +6,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title Crossflow Traffic Prediction Market
-/// @notice Solvent, pari-mutuel ETH markets resolved from an authorized vehicle-count oracle.
+/// @notice Solvent, fixed-return ETH markets resolved from an authorized vehicle-count oracle.
 contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, ReentrancyGuard {
     address public constant PLATFORM_ADMIN = 0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e;
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
@@ -20,6 +20,10 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     uint64 public constant CHALLENGE_PERIOD = 15 minutes;
     uint64 public constant DISPUTE_PERIOD = 7 days;
     uint256 public constant CHALLENGE_BOND = 0.01 ether;
+    uint16 public constant UNDER_MULTIPLIER_BPS = 15_000;
+    uint16 public constant RANGE_MULTIPLIER_BPS = 17_500;
+    uint16 public constant OVER_MULTIPLIER_BPS = 20_000;
+    uint16 public constant EXACT_MULTIPLIER_BPS = 30_000;
 
     enum Outcome { None, Under, Range, Over, Exact }
     enum Status { None, Open, Proposed, Challenged, Resolved, Cancelled }
@@ -62,8 +66,12 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
 
     uint256 public nextMarketId = 1;
     uint256 public protocolFees;
+    uint256 public lockedPayouts;
+    uint256 public challengeRefundLiabilities;
     mapping(uint256 => Market) private markets;
     mapping(uint256 => mapping(Outcome => uint256)) public outcomePools;
+    mapping(uint256 => mapping(Outcome => uint256)) public outcomeLiabilities;
+    mapping(uint256 => uint256) public marketReservedPayout;
     mapping(uint256 => mapping(address => mapping(Outcome => uint256))) public positions;
     mapping(uint256 => mapping(address => bool)) public claimed;
     mapping(address => uint256) public challengeRefunds;
@@ -91,6 +99,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     error UnauthorizedZoneAdmin();
     error StaleZoneConfiguration();
     error ActiveMarketExists(uint256 marketId);
+    error InsufficientLiquidity(uint256 required, uint256 available);
 
     event RoomZoneUpdated(bytes32 indexed roomId, uint32 indexed version, bytes32 indexed configHash);
     event MarketCreated(uint256 indexed marketId, bytes32 indexed roomId, uint64 closeTime, uint32 lowerBound, uint32 upperBound, uint32 exactTarget, uint32 zoneVersion, bytes32 zoneConfigHash);
@@ -102,6 +111,8 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     event Claimed(uint256 indexed marketId, address indexed account, uint256 amount);
     event ChallengeRefundAccrued(address indexed challenger, uint256 amount);
     event OperationalRoleRotated(bytes32 indexed role, address indexed previousAccount, address indexed newAccount);
+    event LiquidityFunded(address indexed account, uint256 amount);
+    event LiquidityWithdrawn(address indexed recipient, uint256 amount);
 
     constructor(address admin, address oracle, address marketOperator, address disputeResolver)
         AccessControlDefaultAdminRules(2 days, admin)
@@ -115,6 +126,24 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         roleAccount[ORACLE_ROLE] = oracle;
         roleAccount[MARKET_ROLE] = marketOperator;
         roleAccount[DISPUTE_ROLE] = disputeResolver;
+    }
+
+    function fundLiquidity() external payable {
+        if (msg.value == 0) revert InvalidStake();
+        emit LiquidityFunded(msg.sender, msg.value);
+    }
+
+    function multiplierBps(Outcome outcome) public pure returns (uint16) {
+        if (outcome == Outcome.Under) return UNDER_MULTIPLIER_BPS;
+        if (outcome == Outcome.Range) return RANGE_MULTIPLIER_BPS;
+        if (outcome == Outcome.Over) return OVER_MULTIPLIER_BPS;
+        if (outcome == Outcome.Exact) return EXACT_MULTIPLIER_BPS;
+        revert InvalidConfiguration();
+    }
+
+    function availableLiquidity() public view returns (uint256) {
+        uint256 reserved = lockedPayouts + challengeRefundLiabilities + protocolFees;
+        return address(this).balance > reserved ? address(this).balance - reserved : 0;
     }
 
     /// @notice Atomically rotates one singleton operational role without exposing a gap in authority.
@@ -159,6 +188,16 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         uint16[8] calldata geometry
     ) external {
         if (msg.sender != PLATFORM_ADMIN) revert UnauthorizedZoneAdmin();
+        _setRoomZone(roomId, geometry);
+    }
+
+    function setRoomZones(bytes32[] calldata roomIds, uint16[8][] calldata geometries) external {
+        if (msg.sender != PLATFORM_ADMIN) revert UnauthorizedZoneAdmin();
+        if (roomIds.length == 0 || roomIds.length != geometries.length) revert InvalidConfiguration();
+        for (uint256 i; i < roomIds.length; ++i) _setRoomZone(roomIds[i], geometries[i]);
+    }
+
+    function _setRoomZone(bytes32 roomId, uint16[8] calldata geometry) internal {
         for (uint256 i; i < geometry.length; ++i) if (geometry[i] > 10_000) revert InvalidConfiguration();
         if (roomId == bytes32(0) || geometry[0] >= geometry[2] || geometry[6] >= geometry[4] || geometry[1] >= geometry[7] ||
             geometry[3] >= geometry[5])
@@ -218,7 +257,18 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
 
         positions[marketId][msg.sender][outcome] += msg.value;
         outcomePools[marketId][outcome] += msg.value;
+        outcomeLiabilities[marketId][outcome] += msg.value * multiplierBps(outcome) / 10_000;
         market.totalPool += msg.value;
+        uint256 previousReserve = marketReservedPayout[marketId];
+        uint256 requiredReserve = market.totalPool;
+        for (uint8 value = uint8(Outcome.Under); value <= uint8(Outcome.Exact); ++value) {
+            uint256 liability = outcomeLiabilities[marketId][Outcome(value)];
+            if (liability > requiredReserve) requiredReserve = liability;
+        }
+        marketReservedPayout[marketId] = requiredReserve;
+        lockedPayouts += requiredReserve - previousReserve;
+        uint256 totalRequired = lockedPayouts + challengeRefundLiabilities + protocolFees;
+        if (address(this).balance < totalRequired) revert InsufficientLiquidity(totalRequired, address(this).balance);
         emit PositionOpened(marketId, msg.sender, outcome, msg.value);
     }
 
@@ -261,6 +311,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         if (zoneConfigHash != market.zoneConfigHash) revert StaleZoneConfiguration();
         if (challengerSucceeded) {
             challengeRefunds[market.challenger] += CHALLENGE_BOND;
+            challengeRefundLiabilities += CHALLENGE_BOND;
             emit ChallengeRefundAccrued(market.challenger, CHALLENGE_BOND);
         } else protocolFees += CHALLENGE_BOND;
         _finalize(marketId, finalCount, finalEvidenceHash);
@@ -270,6 +321,8 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         Market storage market = markets[marketId];
         if (market.status != Status.Challenged || block.timestamp <= market.disputeDeadline) revert InvalidConfiguration();
         challengeRefunds[market.challenger] += CHALLENGE_BOND;
+        challengeRefundLiabilities += CHALLENGE_BOND;
+        _reserveCancellation(marketId);
         market.status = Status.Cancelled;
         market.claimDeadline = uint64(block.timestamp + CLAIM_PERIOD);
         emit ChallengeRefundAccrued(market.challenger, CHALLENGE_BOND);
@@ -280,6 +333,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         uint256 amount = challengeRefunds[msg.sender];
         if (amount == 0) revert InvalidStake();
         challengeRefunds[msg.sender] = 0;
+        challengeRefundLiabilities -= amount;
         (bool success,) = payable(msg.sender).call{value: amount}("");
         if (!success) revert TransferFailed();
     }
@@ -294,12 +348,18 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
 
         // With no winners, cancellation returns every stake and charges no fee.
         if (winningPool == 0) {
+            _reserveCancellation(marketId);
             market.status = Status.Cancelled;
             emit MarketCancelled(marketId);
             return;
         }
 
-        uint256 fee = market.totalPool * market.feeBps / 10_000;
+        uint256 winningLiability = outcomeLiabilities[marketId][winner];
+        uint256 previousReserve = marketReservedPayout[marketId];
+        lockedPayouts = lockedPayouts - previousReserve + winningLiability;
+        marketReservedPayout[marketId] = winningLiability;
+        uint256 grossSurplus = market.totalPool > winningLiability ? market.totalPool - winningLiability : 0;
+        uint256 fee = grossSurplus * market.feeBps / 10_000;
         protocolFees += fee;
         market.winner = winner;
         market.winningPool = winningPool;
@@ -331,10 +391,11 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
                 + positions[marketId][msg.sender][Outcome.Exact];
         } else {
             uint256 stake = positions[marketId][msg.sender][market.winner];
-            uint256 distributable = market.totalPool - (market.totalPool * market.feeBps / 10_000);
-            amount = stake * distributable / market.winningPool;
+            amount = stake * multiplierBps(market.winner) / 10_000;
         }
         if (amount == 0) revert InvalidStake();
+        lockedPayouts -= amount;
+        marketReservedPayout[marketId] -= amount;
         (bool success,) = payable(msg.sender).call{value: amount}("");
         if (!success) revert TransferFailed();
         emit Claimed(marketId, msg.sender, amount);
@@ -343,6 +404,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     function cancelExpired(uint256 marketId) external {
         Market storage market = markets[marketId];
         if (market.status != Status.Open || block.timestamp <= market.resolveDeadline) revert InvalidMarket();
+        _reserveCancellation(marketId);
         market.status = Status.Cancelled;
         market.claimDeadline = uint64(block.timestamp + CLAIM_PERIOD);
         emit MarketCancelled(marketId);
@@ -353,6 +415,20 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         protocolFees -= amount;
         (bool success,) = recipient.call{value: amount}("");
         if (!success) revert TransferFailed();
+    }
+
+    function withdrawLiquidity(address payable recipient, uint256 amount) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        if (recipient == address(0) || amount > availableLiquidity()) revert InvalidConfiguration();
+        (bool success,) = recipient.call{value: amount}("");
+        if (!success) revert TransferFailed();
+        emit LiquidityWithdrawn(recipient, amount);
+    }
+
+    function _reserveCancellation(uint256 marketId) internal {
+        Market storage market = markets[marketId];
+        uint256 previousReserve = marketReservedPayout[marketId];
+        lockedPayouts = lockedPayouts - previousReserve + market.totalPool;
+        marketReservedPayout[marketId] = market.totalPool;
     }
 
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) { _pause(); }

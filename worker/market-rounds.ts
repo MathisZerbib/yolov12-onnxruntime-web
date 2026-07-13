@@ -107,6 +107,7 @@ export interface RoomMarketState {
   outcomePoolsWei: [string, string, string, string];
   nextRoundExpectedAt: number | null;
   staleAfter: number;
+  roundDurationSeconds?: number;
   error?: string;
   retryable?: boolean;
 }
@@ -122,6 +123,10 @@ function getOperatorPrivateKey(env: { MARKET_OPERATOR_PRIVATE_KEY?: string }): H
   const normalizedSecret = typeof secretKey === 'string' ? secretKey.replace(/^0x/, '') : '';
   if (!/^[0-9a-fA-F]{64}$/.test(normalizedSecret)) throw new Error('MARKET_OPERATOR_PRIVATE_KEY is missing or invalid');
   return `0x${normalizedSecret}` as Hex;
+}
+
+export function getAutomationOperatorAddress(env: { MARKET_OPERATOR_PRIVATE_KEY?: string }): `0x${string}` {
+  return privateKeyToAccount(getOperatorPrivateKey(env)).address;
 }
 
 function getMarketConfig(env: Env): MarketConfig {
@@ -212,13 +217,24 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
   try {
     const publicClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
     const capabilities = await inspectAutomationContract(publicClient, config.contractAddress);
-    const marketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
+    const [marketId, roomZone] = await Promise.all([
+      findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry),
+      publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'roomZones', args: [roomKey] }),
+    ]);
+    if (Number(roomZone[8]) === 0) return {
+      roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
+      lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
+      totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: null, staleAfter: serverTime + 30,
+      error: 'This room is waiting for its one-time on-chain zone publication', retryable: false,
+      roundDurationSeconds: config.bettingWindowSeconds,
+    };
     if (marketId === 0n) return {
       roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
       lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
       totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: serverTime + 30, staleAfter: serverTime + 10,
       error: 'Preparing the first round',
       retryable: true,
+      roundDurationSeconds: config.bettingWindowSeconds,
     };
     const [marketResult, underPool, rangePool, overPool, exactPool] = await Promise.all([
       publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [marketId] }),
@@ -244,6 +260,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
       resolveDeadline, lowerBound, upperBound, exactTarget, feeBps, totalPoolWei: totalPool.toString(),
       outcomePoolsWei: [underPool.toString(), rangePool.toString(), overPool.toString(), exactPool.toString()],
       nextRoundExpectedAt: phase === 'open' ? closeTime : serverTime + 30, staleAfter: serverTime + 10,
+      roundDurationSeconds: config.bettingWindowSeconds,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'unknown';
@@ -254,6 +271,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
       lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
       totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: serverTime + 30, staleAfter: serverTime + 10,
       error: configurationError ? errorMessage : 'Could not synchronize this room with Arbitrum Sepolia', retryable: !configurationError,
+      roundDurationSeconds: config.bettingWindowSeconds,
     };
   }
 }
@@ -263,6 +281,8 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
  * is the coordination atom, so all room creation transactions are serialized here.
  */
 export class MarketScheduler extends DurableObject<Env> {
+  private reconcileInFlight: Promise<{ checked: number; created: number; skipped: number; errors: number }> | null = null;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -277,14 +297,20 @@ export class MarketScheduler extends DurableObject<Env> {
     });
   }
 
-  async reconcile(): Promise<{ checked: number; created: number; errors: number }> {
+  async reconcile(): Promise<{ checked: number; created: number; skipped: number; errors: number }> {
+    if (this.reconcileInFlight) return this.reconcileInFlight;
+    this.reconcileInFlight = this.runReconciliation().finally(() => { this.reconcileInFlight = null; });
+    return this.reconcileInFlight;
+  }
+
+  private async runReconciliation(): Promise<{ checked: number; created: number; skipped: number; errors: number }> {
     let config: MarketConfig;
     try {
       config = getMarketConfig(this.env);
     } catch (error) {
       console.error(JSON.stringify({ event: 'market_scheduler_misconfigured', error: error instanceof Error ? error.message : 'unknown' }));
       await this.ctx.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
-      return { checked: 0, created: 0, errors: 1 };
+      return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
 
     const capabilityClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
@@ -294,10 +320,11 @@ export class MarketScheduler extends DurableObject<Env> {
       const message = error instanceof Error ? error.message : 'Contract capability check failed';
       console.warn(JSON.stringify({ event: 'market_scheduler_blocked', contractAddress: config.contractAddress, error: message }));
       await this.ctx.storage.deleteAlarm();
-      return { checked: 0, created: 0, errors: 1 };
+      return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
 
     let created = 0;
+    let skipped = 0;
     let errors = 0;
     let nextAlarm = Number.POSITIVE_INFINITY;
     for (const roomId of config.enabledRooms) {
@@ -306,15 +333,20 @@ export class MarketScheduler extends DurableObject<Env> {
         if (result.created) created++;
         if (result.closeTime) nextAlarm = Math.min(nextAlarm, result.closeTime * 1_000 + 1_000);
       } catch (error) {
-        errors++;
         const message = error instanceof Error ? error.message : 'Unknown scheduler error';
         this.record(roomId, null, null, null, message);
-        console.error(JSON.stringify({ event: 'market_round_reconcile_failed', roomId, error: message }));
-        nextAlarm = Math.min(nextAlarm, Date.now() + (error instanceof SchedulerConfigurationError ? CONFIG_RETRY_DELAY_MS : RETRY_DELAY_MS));
+        if (error instanceof SchedulerConfigurationError) {
+          skipped++;
+          nextAlarm = Math.min(nextAlarm, Date.now() + CONFIG_RETRY_DELAY_MS);
+        } else {
+          errors++;
+          console.error(JSON.stringify({ event: 'market_round_reconcile_failed', roomId, error: message }));
+          nextAlarm = Math.min(nextAlarm, Date.now() + RETRY_DELAY_MS);
+        }
       }
     }
     if (Number.isFinite(nextAlarm)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, nextAlarm));
-    return { checked: config.enabledRooms.length, created, errors };
+    return { checked: config.enabledRooms.length, created, skipped, errors };
   }
 
   private async ensureBettingRound(config: MarketConfig, roomId: string): Promise<{ created: boolean; marketId: string; closeTime: number }> {
@@ -428,7 +460,28 @@ export class MarketScheduler extends DurableObject<Env> {
       exactTarget: config.exactTarget,
       feeBps: config.feeBps
     }));
-    const txHash = await walletClient.writeContract(simulation.request);
+    const MAX_NONCE_RETRIES = 4;
+    let txHash: Hex | undefined;
+    for (let nonceRetry = 0; nonceRetry < MAX_NONCE_RETRIES; nonceRetry++) {
+      try {
+        const currentNonce = await publicClient.getTransactionCount({ address: account.address, blockTag: 'latest' });
+        txHash = await walletClient.writeContract({
+          ...simulation.request,
+          nonce: currentNonce,
+        });
+        break;
+      } catch (writeError) {
+        const message = writeError instanceof Error ? writeError.message : 'unknown';
+        const nonceTooLow = /nonce too low|nonce is lower than the current nonce/i.test(message) || /nonce provided.*lower than the current nonce/i.test(message);
+        if (nonceTooLow && nonceRetry < MAX_NONCE_RETRIES - 1) {
+          console.warn(JSON.stringify({ event: 'nonce_too_low_retry', roomId, attempt: nonceRetry + 1, error: message }));
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+        throw writeError;
+      }
+    }
+    if (!txHash) throw new Error(`Failed to send market creation transaction for ${roomId} after ${MAX_NONCE_RETRIES} nonce retries`);
     console.log(JSON.stringify({
       event: 'create_market_tx_sent',
       roomId,

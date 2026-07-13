@@ -2,47 +2,20 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useRef, useState, useEffect, useCallback } from 'react';
 import type Hls from 'hls.js';
 import { ROOMS } from '@/lib/globe-markers';
-import { BET_TYPES, GAME_CONFIG } from '@/config/game-config';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Play, Square, Loader2, Radio, ShieldCheck, Crosshair, Volume2 } from 'lucide-react';
 import { WalletButton } from '@/components/wallet-button';
-import { PlacePositionButton } from '@/components/place-position-button';
 import { publishInferenceManifest } from '@/lib/inference-manifest';
 import { AUTH_API_URL } from '@/lib/wagmi';
-import { ChallengeTimeline } from '@/components/challenge-timeline';
 import { getSharedDetector, ObjectDetector } from '@/lib/object-detector';
 import { Detection } from '@/lib/types';
 import { TrafficCounter } from '@/lib/traffic-counter';
 import type { DetectionZone } from '@/config/detection-zone';
-import { useRoomMarket, type RoomMarketState } from '@/lib/room-market';
-import { formatEther, parseEther } from 'viem';
+import { useRoomMarket } from '@/lib/room-market';
 import { DetectionScoreboard } from '@/components/detection-scoreboard';
 import { DetectionCountEffects, type DetectionCountRipple } from '@/components/detection-count-effects';
 import { LazyMotion, domAnimation } from 'motion/react';
-
-function formatCountdown(seconds: number): string {
-  const safe = Math.max(0, seconds);
-  const minutes = Math.floor(safe / 60);
-  return `${String(minutes).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
-}
-
-function estimatedClaim(market: RoomMarketState | null, outcome: number, stake: string): string | null {
-  if (!market?.marketId || market.phase !== 'open' || market.feeBps === null || !/^\d+(?:\.\d{1,18})?$/.test(stake)) return null;
-  try {
-    const stakeWei = parseEther(stake);
-    if (stakeWei <= 0n) return null;
-    const totalAfter = BigInt(market.totalPoolWei) + stakeWei;
-    const selectedAfter = BigInt(market.outcomePoolsWei[outcome] ?? '0') + stakeWei;
-    const distributable = totalAfter - totalAfter * BigInt(market.feeBps) / 10_000n;
-    return Number(formatEther(stakeWei * distributable / selectedAfter)).toFixed(4);
-  } catch { return null; }
-}
-
-function estimatedMultiple(market: RoomMarketState | null, outcome: number, stake: string): string {
-  const claim = estimatedClaim(market, outcome, stake);
-  const stakeValue = Number(stake);
-  return claim && Number.isFinite(stakeValue) && stakeValue > 0 ? `${(Number(claim) / stakeValue).toFixed(2)}×` : '—';
-}
+import { RoomBettingConsole } from '@/components/room-betting-console';
 
 export default function RoomPage() {
   const { roomId } = useParams();
@@ -57,6 +30,7 @@ export default function RoomPage() {
   const counterRef = useRef<TrafficCounter>(new TrafficCounter());
   const animRef = useRef<number>(null);
   const processingRef = useRef(false);
+  const autoStartRequestedRef = useRef(false);
   const detectorRef = useRef<ObjectDetector | null>(null);
   const lastUiUpdateRef = useRef(0);
   const roundStartedAtRef = useRef<Date | null>(null);
@@ -67,10 +41,9 @@ export default function RoomPage() {
   const [isReady, setIsReady] = useState(false);
   const [count, setCount] = useState(0);
   const [processing, setProcessing] = useState(false);
-  const [selectedType, setSelectedType] = useState<number>(BET_TYPES[0].id);
   const [modelLoading, setModelLoading] = useState(true);
   const [detectorReady, setDetectorReady] = useState(false);
-  const [ethAmount, setEthAmount] = useState<string>(String(GAME_CONFIG.BETTING.MIN_ETH));
+  const [detectorAttempt, setDetectorAttempt] = useState(0);
   const [clock, setClock] = useState(() => Date.now());
   const [synchronizedFrameReady, setSynchronizedFrameReady] = useState(false);
   const [roomLeaseError, setRoomLeaseError] = useState('');
@@ -179,6 +152,8 @@ export default function RoomPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setModelLoading(true);
+    setDetectorReady(false);
     getSharedDetector()
       .then((detector) => {
         if (cancelled) return;
@@ -186,10 +161,12 @@ export default function RoomPage() {
         if (detector.getMetadata()) {
           counterRef.current.setClassNames(detector.getMetadata()!.classes);
         }
+        setDetectionError('');
         setDetectorReady(true);
       })
       .catch((err) => {
         console.error('Failed to initialize detector on room page:', err);
+        if (!cancelled) setDetectionError('The on-device detector could not start. Retry after the runtime assets finish loading.');
       })
       .finally(() => {
         if (!cancelled) setModelLoading(false);
@@ -198,7 +175,7 @@ export default function RoomPage() {
       cancelled = true;
       detectorRef.current = null;
     };
-  }, []);
+  }, [detectorAttempt]);
 
   const loop = useCallback(async (detector: ObjectDetector) => {
     const video = videoRef.current;
@@ -390,6 +367,7 @@ export default function RoomPage() {
     counterRef.current.reset();
     setCount(0);
     processingRef.current = true;
+    autoStartRequestedRef.current = false;
     roundStartedAtRef.current = new Date();
     setSynchronizedFrameReady(false);
     setDetectionError('');
@@ -441,6 +419,15 @@ export default function RoomPage() {
     rippleTimersRef.current = [];
   }, [roomId]);
 
+  const handlePositionConfirmed = useCallback(() => {
+    autoStartRequestedRef.current = true;
+    if (!processingRef.current) void startProcessing();
+  }, [startProcessing]);
+
+  useEffect(() => {
+    if (autoStartRequestedRef.current && isReady && detectorReady && detectionZone && !processingRef.current) void startProcessing();
+  }, [detectionZone, detectorReady, isReady, startProcessing]);
+
   if (!room) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -452,23 +439,8 @@ export default function RoomPage() {
     );
   }
 
-  const selectedBet = BET_TYPES.find((type) => type.id === selectedType) ?? BET_TYPES[0];
   const serverNow = market ? market.serverTime + Math.max(0, Math.floor((clock - syncedAt) / 1_000)) : Math.floor(clock / 1_000);
   const secondsRemaining = market?.closeTime ? Math.max(0, market.closeTime - serverNow) : 0;
-  const roundStatus = marketLoading ? 'SYNCING' : market?.phase === 'open' ? 'OPEN' : market?.phase === 'proposed' ? 'REVIEW' : market?.phase === 'challenged' ? 'DISPUTED' : 'WAITING';
-  const roundTiming = marketLoading ? 'Synchronizing round…' : market?.phase === 'open'
-    ? `Bets lock in ${formatCountdown(secondsRemaining)}`
-    : market?.phase === 'awaiting_result' || market?.phase === 'proposed' || market?.phase === 'challenged'
-      ? 'Previous result settling · next round preparing'
-      : 'Preparing the next round…';
-  const claimEstimate = estimatedClaim(market, selectedType, ethAmount);
-  const outcomeDescription = (typeId: number, fallback: string) => {
-    if (market?.lowerBound === null || market?.upperBound === null || market?.exactTarget === null || !market) return fallback;
-    if (typeId === 0) return `Below ${market.lowerBound}`;
-    if (typeId === 1) return `${market.lowerBound}–${market.upperBound}, except ${market.exactTarget}`;
-    if (typeId === 2) return `Above ${market.upperBound}`;
-    return `Exactly ${market.exactTarget}`;
-  };
 
   return (
     <LazyMotion features={domAnimation} strict>
@@ -513,24 +485,16 @@ export default function RoomPage() {
           <span className={processing ? 'active' : ''}><i /> {processing ? `DETECTING · ${visibleVehicles} IN FRAME${inferenceMs ? ` / ${Math.round(inferenceMs)}MS` : ''}` : 'STANDBY'}</span>
         </div>
         <DetectionScoreboard count={count} visibleVehicles={visibleVehicles} processing={processing} roundId={market?.marketId} />
-        {isReady && detectorReady && <button disabled={!detectionZone || zoneLoading} className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : zoneLoading ? 'Loading admin zone…' : 'Start live detection'}</button>}
+        {isReady && !modelLoading && (detectorReady
+          ? <button disabled={!detectionZone || zoneLoading} className={`detect-control ${processing ? 'stop' : ''}`} onClick={processing ? stopProcessing : startProcessing}>{processing ? <Square /> : <Play />}{processing ? 'Stop oracle' : zoneLoading ? 'Loading admin zone…' : 'Start live detection'}</button>
+          : <button className="detect-control" onClick={() => setDetectorAttempt((attempt) => attempt + 1)}><Play /> Retry detector</button>)}
         {roomLeaseError && <div className="room-lease-error" role="alert">{roomLeaseError}</div>}
-        {detectionError && <div className="room-lease-error" role="alert">Detection stopped: {detectionError}</div>}
+        {detectionError && <div className="room-lease-error" role="alert">{processing ? 'Detection stopped: ' : ''}{detectionError}</div>}
           </div>
           <footer className="broadcast-footer"><span><Radio /> {room.viewers.toLocaleString()} watching</span><span>{detectionZone ? `Admin zone v${detectionZone.version} · enter + leave to count` : 'Admin zone unavailable'}</span><span>CONFIDENCE ≥ 50%</span></footer>
         </section>
 
-        <aside className="room-ticket">
-          <div className="round-header"><div><span>{market?.marketId ? `ROUND #${market.marketId}` : 'LIVE ROUND'}</span><b>{roundTiming}</b></div><i>{roundStatus}</i></div>
-          <div className="ticket-title"><h1>How many vehicles cross the zone?</h1><p>Odds move with the pool until betting locks. The result follows the room’s verified counting window.</p></div>
-          {(marketError || market?.error) && <div className="round-sync-warning" role="status"><span>{marketError || market?.error}</span><button onClick={() => void refreshMarket()}>Retry</button></div>}
-          <div className="ticket-block"><label>Choose outcome</label><div className="room-outcomes">{BET_TYPES.map((type) => <button key={type.id} disabled={market?.phase !== 'open'} className={selectedType === type.id ? 'active' : ''} onClick={() => setSelectedType(type.id)}><span>{type.name}<small>{outcomeDescription(type.id, type.description)}</small></span><b>{estimatedMultiple(market, type.id, ethAmount)}</b></button>)}</div></div>
-          <div className="ticket-block"><div className="ticket-label"><label htmlFor="room-stake">Stake</label><span>{market?.feeBps !== null && market ? `${market.feeBps / 100}% protocol fee` : 'Pari-mutuel pool'}</span></div><div className="ticket-amount"><input id="room-stake" aria-label="ETH stake" type="text" inputMode="decimal" autoComplete="off" value={ethAmount} onChange={(e) => setEthAmount(e.target.value)}/><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1,5).map((p) => <button key={p} onClick={() => setEthAmount(String(p))}>{p}</button>)}</div></div>
-          <div className="ticket-summary"><div><span>Your call</span><b>{selectedBet.name}</b></div><div><span>Estimated total claim</span><b>{claimEstimate ? `${claimEstimate} ETH` : '—'}</b><small>Changes as the pool moves</small></div></div>
-          <PlacePositionButton roomId={room.id} market={market} stale={marketStale} outcome={selectedType} amount={ethAmount} onConfirmed={refreshMarket} />
-          {(market?.phase === 'proposed' || market?.phase === 'challenged') && <ChallengeTimeline />}
-          <p className="ticket-fineprint"><ShieldCheck /> Settlement secured on {GAME_CONFIG.NETWORK.NAME}</p>
-        </aside>
+        <RoomBettingConsole roomId={room.id} market={market} marketLoading={marketLoading} marketStale={marketStale} marketError={marketError} secondsRemaining={secondsRemaining} onRefresh={refreshMarket} onPositionConfirmed={handlePositionConfirmed} />
       </div>
     </main>
     </LazyMotion>

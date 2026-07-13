@@ -20,6 +20,7 @@ export interface RoomMarketState {
   outcomePoolsWei: [string, string, string, string];
   nextRoundExpectedAt: number | null;
   staleAfter: number;
+  roundDurationSeconds?: number;
   error?: string;
 }
 

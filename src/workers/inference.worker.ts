@@ -63,7 +63,8 @@ self.onmessage = async (event: MessageEvent) => {
   const { id, type } = event.data;
   try {
     if (type === 'init') {
-      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.0/dist/';
+      ort.env.wasm.wasmPaths = `${event.data.basePath}ort-wasm/`;
+      console.log('[ort-wasm-debug] wasmPaths set to', ort.env.wasm.wasmPaths, 'basePath', event.data.basePath);
       const metadataResponse = await fetch(`${event.data.basePath}models/model-metadata.json`, { cache: 'no-cache' });
       metadata = await metadataResponse.json() as ModelMetadata;
       const modelUrl = `${event.data.basePath}models/yolov12n.onnx`;

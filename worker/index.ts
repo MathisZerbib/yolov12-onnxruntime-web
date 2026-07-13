@@ -1,6 +1,6 @@
 import { encodeAbiParameters, getAddress, isAddress, keccak256, toBytes, verifyMessage, type Hex } from 'viem';
 import { createSiweMessage, parseSiweMessage } from 'viem/siwe';
-import { readRoomMarketState } from './market-rounds';
+import { getAutomationOperatorAddress, readRoomMarketState } from './market-rounds';
 export { RoomCoordinator } from './room-coordinator';
 export { MarketScheduler } from './market-rounds';
 
@@ -236,6 +236,22 @@ export default {
         if (token) await env.DB.prepare('DELETE FROM auth_sessions WHERE token_hash = ?1').bind(await sha256(token)).run();
         const secure = String(env.ENVIRONMENT) === 'production' ? '; Secure' : '';
         return json({ ok: true }, 200, { ...cors, 'set-cookie': `${sessionCookieName(env)}=; HttpOnly${secure}; SameSite=Lax; Path=/; Max-Age=0` });
+      }
+
+      if (url.pathname === '/admin/market-scheduler/reconcile' && request.method === 'POST') {
+        if (!assertOrigin(request, env)) return json({ error: 'Invalid origin' }, 403, cors);
+        const address = await sessionAddress(request, env);
+        if (!address) return json({ error: 'Authentication required' }, 401, cors);
+        if (address.toLowerCase() !== PLATFORM_ADMIN_ADDRESS) return json({ error: 'Platform admin required' }, 403, cors);
+        const result = await env.MARKET_SCHEDULER.getByName('market-operator').reconcile();
+        return json(result, result.errors === 0 ? 200 : 503, cors);
+      }
+
+      if (url.pathname === '/admin/market-scheduler/operator' && request.method === 'GET') {
+        const address = await sessionAddress(request, env);
+        if (!address) return json({ error: 'Authentication required' }, 401, cors);
+        if (address.toLowerCase() !== PLATFORM_ADMIN_ADDRESS) return json({ error: 'Platform admin required' }, 403, cors);
+        return json({ address: getAutomationOperatorAddress(env) }, 200, cors);
       }
 
       const roomMarket = url.pathname.match(/^\/rooms\/([a-z0-9-]{1,64})\/market$/);

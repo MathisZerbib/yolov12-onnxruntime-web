@@ -170,26 +170,29 @@ export function MarketCreatePanel() {
       const zoneVersion = (zoneData as readonly [readonly number[], number, `0x${string}`])[1];
       if (zoneVersion === 0) throw new Error('Room zone is not configured on-chain. Open Admin > Zones and publish the zone first.');
 
-      const txHash = await (operator.client as unknown as { writeContract: (params: { address: `0x${string}`; abi: readonly unknown[]; functionName: string; args: readonly unknown[]; chain: typeof arbitrumSepolia }) => Promise<`0x${string}`> }).writeContract({
+      const latestId = await publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'latestMarketIdByRoom', args: [roomKeyBytes] });
+      if ((latestId as bigint) > 0n) {
+        const latest = await publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [latestId as bigint] });
+        const latestTuple = latest as unknown as readonly [unknown, bigint, bigint, bigint, bigint, bigint, number, number, number, number, number, number, number, number, `0x${string}`, `0x${string}`, `0x${string}`, `0x${string}`, bigint, bigint];
+        const latestStatus = latestTuple[13] as number;
+        const latestCloseTime = Number(latestTuple[1]);
+        if (latestStatus === 1 && latestCloseTime > nowSeconds) throw new Error('This room already has an open market. Wait until it closes before creating a new one.');
+      }
+
+      const simulation = await publicClient.simulateContract({
+        account: operator.account,
         address: marketContractAddress,
         abi: trafficMarketAbi,
         functionName: 'createMarket',
-        args: [
-          roomKeyBytes,
-          closeTime,
-          resolveDeadline,
-          lower,
-          upper,
-          exact,
-          SAFE_FEE_BPS,
-        ],
+        args: [roomKeyBytes, closeTime, resolveDeadline, lower, upper, exact, SAFE_FEE_BPS],
         chain: arbitrumSepolia,
       });
+      const txHash = await (operator.client as unknown as { writeContract: (params: unknown) => Promise<`0x${string}`> }).writeContract(simulation.request);
       setNotice(`Market creation submitted: ${txHash.slice(0, 12)}…`);
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: 1 });
       if (receipt.status !== 'success') {
         console.error(JSON.stringify({ event: 'create_market_reverted', txHash, receipt }));
-        throw new Error('Market creation reverted');
+        throw new Error('Market creation reverted on-chain');
       }
       const [refreshedNextId, createdId] = await Promise.all([
         publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' }),
@@ -199,7 +202,12 @@ export function MarketCreatePanel() {
       setNotice(`Market #${createdId.toString()} created and is now open. Players in this room will discover it automatically.`);
       setForm(emptyState());
     } catch (error) {
-      setNotice(error instanceof Error ? error.message.split('\n')[0] : 'Market creation failed');
+      const raw = error instanceof Error ? error.message : 'Market creation failed';
+      const match = raw.match(/reverted with custom error '([^']+)'/i)
+        || raw.match(/reverted with reason string '([^']+)'/i)
+        || raw.match(/reverted with the following reason:\s*(.+)/i)
+        || raw.match(/execution reverted:\s*(.+)/i);
+      setNotice(match ? `Market creation failed: ${match[1].trim()}` : raw.split('\n')[0]);
     } finally {
       setPending(false);
     }

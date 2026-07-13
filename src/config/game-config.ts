@@ -14,6 +14,7 @@ export const GAME_CONFIG = {
     SUBMISSION_GUARD_SECONDS: 8,
     HOUSE_EDGE: 0.97,
     PRESETS: [0.001, 0.01, 0.05, 0.1, 0.5, 1] as const,
+    MULTIPLIERS: [1.5, 1.75, 2, 3] as const,
   },
 } as const;
 

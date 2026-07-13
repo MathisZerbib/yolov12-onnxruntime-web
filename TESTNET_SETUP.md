@@ -59,6 +59,8 @@ To remove the "LEGACY" warning and enable draggable trapezoid zones:
 3. Click **"One-click redeploy with prepared roles"**
 4. Wait for transaction confirmation (~30 seconds)
 
+**Auto-funding role wallets:** By default the deployer's admin wallet tops up each prepared role wallet with testnet ETH (up to 0.05 ETH per role) if it is running low. This is required for the market operator, oracle, and dispute resolver to pay gas for on-chain actions. Uncheck "Auto-fund role wallets" in the panel if you prefer to fund them manually from a faucet.
+
 **Note:** The deployment creates 3 role wallets. You can see their addresses in the deployment panel. Save the private keys somewhere safe if you want to use them for `MARKET_OPERATOR_PRIVATE_KEY`.
 
 ### Step 3: Set Up Worker Secrets
