@@ -1,12 +1,12 @@
 import { memo, useCallback, useEffect, useState } from 'react';
 import { formatEther, parseEther } from 'viem';
-import { RotateCcw, ShieldCheck, Trophy, XCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { ShieldCheck } from 'lucide-react';
 import { usePublicClient } from 'wagmi';
 import { arbitrumSepolia } from 'wagmi/chains';
 import { BET_TYPES, GAME_CONFIG } from '@/config/game-config';
 import { ChallengeTimeline } from '@/components/challenge-timeline';
 import { PlacePositionButton } from '@/components/place-position-button';
+import { BetResultDialog } from '@/components/bet-result-dialog';
 import type { RoomMarketState } from '@/lib/room-market';
 import { DEFAULT_BET_DRAFT, useGameUiStore } from '@/stores/game-ui-store';
 import { marketContractAddress, trafficMarketAbi } from '@/lib/market-contract';
@@ -135,13 +135,18 @@ function RoomBettingConsoleComponent({ roomId, market, marketLoading, marketStal
     settled: false,
   } : null;
   const displayedResult = betResult ?? detectedResult;
+  const handleContinue = useCallback(() => {
+    setConfirmedBet(null);
+    setBetResult(null);
+  }, []);
   const multiple = (outcome: number) => {
     const claim = estimatedClaim(market, outcome, ethAmount);
     const stake = Number(ethAmount);
     return claim && stake > 0 ? `${(Number(claim) / stake).toFixed(2)}×` : '—';
   };
 
-  return <aside className="room-ticket" aria-label="Bet slip">
+  return <>
+  <aside className="room-ticket" aria-label="Bet slip">
     <div className="round-header"><div><span>{market?.marketId ? `ROUND #${market.marketId}` : 'LIVE ROUND'}</span><b>{roundTiming}</b></div><i data-state={roundStatus.toLowerCase()}>{roundStatus}</i></div>
     <section className={`round-clock ${personalRunActive ? 'is-playing' : 'is-ready'}`} aria-label="Personal game timing"><div><span>Your game duration</span><b>{formatDuration(roundDuration)}</b></div><div><span>{personalRunActive ? 'Time remaining' : 'Starts'}</span><b>{personalRunActive ? formatCountdown(personalSecondsRemaining) : 'After confirmation'}</b></div><div className="round-progress" aria-hidden="true"><i style={{ transform: `scaleX(${elapsedPercent / 100})` }} /></div><p>{personalRunActive ? 'Vehicle detection is running for your confirmed bet.' : 'There is no pre-bet countdown. Your own 30-second game starts when your transaction confirms.'}</p></section>
     <div className="ticket-title"><h1>How many vehicles cross the zone?</h1><p>Choose a result and bet when you are ready. Returns are fixed and bankroll-backed.</p></div>
@@ -150,11 +155,12 @@ function RoomBettingConsoleComponent({ roomId, market, marketLoading, marketStal
     <div className="ticket-block"><div className="ticket-label"><label htmlFor="room-stake">Stake</label><span>Fixed return · bankroll backed</span></div><div className="ticket-amount"><input id="room-stake" aria-label="ETH stake" disabled={gameLocked} type="text" inputMode="decimal" autoComplete="off" value={ethAmount} onChange={(event) => setStake(roomId, event.target.value)} /><span>ETH</span></div><div className="room-presets">{GAME_CONFIG.BETTING.PRESETS.slice(1, 5).map((preset) => <button key={preset} disabled={gameLocked} onClick={() => setStake(roomId, String(preset))}>{preset}</button>)}</div></div>
     {!gameLocked && <PlacePositionButton roomId={roomId} market={market} stale={marketStale} outcome={selectedType} amount={ethAmount} error={marketError || market?.error} onConfirmed={handleConfirmed} />}
     {gameLocked && !displayedResult && <section className="bet-awaiting" role="status" aria-live="polite"><span className="is-spinning" /><div><b>{personalRunActive ? 'YOUR GAME IS LIVE' : 'CALCULATING YOUR RESULT'}</b><small>{personalRunActive ? `${formatCountdown(personalSecondsRemaining!)} remaining · counting vehicles now` : 'Finishing the 30-second vehicle count…'}</small></div></section>}
-    {displayedResult && <section className={`bet-result ${displayedResult.state}`} role="alert" aria-live="assertive">{displayedResult.state === 'win' ? <Trophy /> : displayedResult.state === 'loss' ? <XCircle /> : <RotateCcw />}<div><span>{displayedResult.state === 'win' ? 'YOU WON' : displayedResult.state === 'loss' ? 'YOU LOST' : 'ROUND REFUNDED'}</span><b>{displayedResult.state === 'win' ? displayedResult.settled ? `${confirmedBet?.totalReturn} ETH is ready to claim` : `Detected ${displayedResult.finalCount} vehicles · payout finalizing` : displayedResult.state === 'loss' ? `Final count: ${displayedResult.finalCount}` : `${confirmedBet?.stake} ETH is ready to reclaim`}</b></div><div className="bet-result-actions">{displayedResult.settled && displayedResult.state !== 'loss' && <Link to="/profile">Claim funds</Link>}<button onClick={() => { setConfirmedBet(null); setBetResult(null); }}>Continue</button></div></section>}
     {confirmedBet && <section className="bet-recap is-confirmed" aria-labelledby="bet-recap-title"><header><span id="bet-recap-title">Bet recap</span><b>CONFIRMED · ROUND #{confirmedBet.marketId}</b></header><dl><div><dt>Your prediction</dt><dd>{confirmedBet.prediction}<small>{confirmedBet.predictionDetail}</small></dd></div><div><dt>Your stake</dt><dd>{confirmedBet.stake} ETH</dd></div><div><dt>Guaranteed multiplier</dt><dd>{confirmedBet.multiplier.toFixed(2)}×</dd></div><div className="recap-return"><dt>If you win</dt><dd>{confirmedBet.totalReturn} ETH<small>Stake returned + {confirmedBet.profit} ETH profit</small></dd></div></dl></section>}
     {(market?.phase === 'proposed' || market?.phase === 'challenged') && <ChallengeTimeline />}
     <p className="ticket-fineprint"><ShieldCheck /> Settlement secured on {GAME_CONFIG.NETWORK.NAME}</p>
-  </aside>;
+  </aside>
+  {displayedResult && <BetResultDialog state={displayedResult.state} finalCount={displayedResult.finalCount} settled={displayedResult.settled} totalReturn={confirmedBet?.totalReturn} stake={confirmedBet?.stake} onContinue={handleContinue} />}
+  </>;
 }
 
 export const RoomBettingConsole = memo(RoomBettingConsoleComponent);

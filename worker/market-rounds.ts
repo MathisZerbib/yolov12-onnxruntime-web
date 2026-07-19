@@ -24,6 +24,10 @@ const MARKET_CREATED_EVENT = parseAbiItem('event MarketCreated(uint256 indexed m
 
 class SchedulerConfigurationError extends Error {}
 
+export function stringifyLogEvent(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item) ?? 'null';
+}
+
 // ABI from the deployed contract artifact, with named tuple outputs preserved
 const trafficMarketAbi = [
   { type: 'function', name: 'latestMarketIdByRoom', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [{ name: '', type: 'uint256' }] },
@@ -162,7 +166,9 @@ export function shouldKeepExistingMarket(
   nowSeconds: number,
   supportsRollingMarkets: boolean,
 ): boolean {
-  if (!supportsRollingMarkets) return status === 1 || status === 2 || status === 3;
+  // Legacy deployments allow the room pointer to advance only after the
+  // current betting window closes. Settlement can continue on the old ID.
+  if (!supportsRollingMarkets) return status === 1 && closeTime > nowSeconds;
   return status === 1 && closeTime > nowSeconds + NEXT_ROUND_LEAD_SECONDS;
 }
 
@@ -259,7 +265,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
       publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [marketId] }),
       ...([1, 2, 3, 4] as const).map(outcome => publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'outcomePools', args: [marketId, outcome] })),
     ]);
-    console.log(JSON.stringify({ event: 'market_read_raw', roomId, marketId: marketId.toString(), marketResultType: typeof marketResult, marketResultLength: Array.isArray(marketResult) ? marketResult.length : 'n/a' }));
+    console.log(stringifyLogEvent({ event: 'market_read_raw', roomId, marketId: marketId.toString(), marketResultType: typeof marketResult, marketResultLength: Array.isArray(marketResult) ? marketResult.length : 'n/a' }));
     const market = marketResult as readonly [
       `0x${string}`, bigint, bigint, bigint, bigint, bigint,
       number, number, number, number, number, number, number,
@@ -275,7 +281,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
     const status = market[13] as number;
     const totalPool = market[18];
     const phase = phaseFor(status, closeTime, serverTime);
-    console.log(JSON.stringify({ event: 'read_market_state', roomId, marketId: marketId.toString(), status, phase, closeTime, serverTime, staleAfter: serverTime + 10 }));
+    console.log(stringifyLogEvent({ event: 'read_market_state', roomId, marketId: marketId.toString(), status, phase, closeTime, serverTime, staleAfter: serverTime + 10 }));
     return {
       roomId, roomKey, enabled, serverTime, phase, marketId: marketId.toString(), closeTime,
       resolveDeadline, lowerBound, upperBound, exactTarget, feeBps, totalPoolWei: totalPool.toString(),
@@ -286,7 +292,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'unknown';
     const configurationError = error instanceof SchedulerConfigurationError;
-    if (!configurationError) console.error(JSON.stringify({ event: 'market_state_read_failed', roomId, roomKey, contractAddress: config.contractAddress, error: errorMessage }));
+    if (!configurationError) console.error(stringifyLogEvent({ event: 'market_state_read_failed', roomId, roomKey, contractAddress: config.contractAddress, error: errorMessage }));
     return {
       roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
       lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
@@ -329,12 +335,12 @@ export class MarketScheduler extends DurableObject<Env> {
     try {
       config = getMarketConfig(this.env);
     } catch (error) {
-      console.error(JSON.stringify({ event: 'market_scheduler_misconfigured', error: error instanceof Error ? error.message : 'unknown' }));
+      console.error(stringifyLogEvent({ event: 'market_scheduler_misconfigured', error: error instanceof Error ? error.message : 'unknown' }));
       await this.ctx.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
       return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
 
-    console.log(JSON.stringify({ event: 'reconcile_start', rooms: config.enabledRooms.length, contract: config.contractAddress, rpc: config.rpcUrl }));
+    console.log(stringifyLogEvent({ event: 'reconcile_start', rooms: config.enabledRooms.length, contract: config.contractAddress, rpc: config.rpcUrl }));
 
     const capabilityClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
     let contractCapabilities: { hasRoomRegistry: boolean; supportsRollingMarkets: boolean };
@@ -342,11 +348,11 @@ export class MarketScheduler extends DurableObject<Env> {
       contractCapabilities = await inspectAutomationContract(capabilityClient, config.contractAddress);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Contract capability check failed';
-      console.warn(JSON.stringify({ event: 'market_scheduler_blocked', contractAddress: config.contractAddress, error: message }));
+      console.warn(stringifyLogEvent({ event: 'market_scheduler_blocked', contractAddress: config.contractAddress, error: message }));
       await this.ctx.storage.deleteAlarm();
       return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
-    console.log(JSON.stringify({ event: 'contract_capabilities', hasRoomRegistry: contractCapabilities.hasRoomRegistry, supportsRollingMarkets: contractCapabilities.supportsRollingMarkets }));
+    console.log(stringifyLogEvent({ event: 'contract_capabilities', hasRoomRegistry: contractCapabilities.hasRoomRegistry, supportsRollingMarkets: contractCapabilities.supportsRollingMarkets }));
 
     let created = 0;
     let skipped = 0;
@@ -355,7 +361,7 @@ export class MarketScheduler extends DurableObject<Env> {
     for (const roomId of config.enabledRooms) {
       try {
         const result = await this.ensureBettingRound(config, roomId);
-        console.log(JSON.stringify({ event: 'ensure_result', roomId, created: result.created, marketId: result.marketId, closeTime: result.closeTime }));
+        console.log(stringifyLogEvent({ event: 'ensure_result', roomId, created: result.created, marketId: result.marketId, closeTime: result.closeTime }));
         if (result.created) created++;
         if (result.closeTime) {
           nextAlarm = Math.min(nextAlarm, nextRoundAlarmSeconds(
@@ -372,12 +378,12 @@ export class MarketScheduler extends DurableObject<Env> {
           nextAlarm = Math.min(nextAlarm, Date.now() + CONFIG_RETRY_DELAY_MS);
         } else {
           errors++;
-          console.error(JSON.stringify({ event: 'market_round_reconcile_failed', roomId, error: message }));
+          console.error(stringifyLogEvent({ event: 'market_round_reconcile_failed', roomId, error: message }));
           nextAlarm = Math.min(nextAlarm, Date.now() + RETRY_DELAY_MS);
         }
       }
     }
-    console.log(JSON.stringify({ event: 'reconcile_end', created, skipped, errors, nextAlarm: Number.isFinite(nextAlarm) ? new Date(nextAlarm).toISOString() : null }));
+    console.log(stringifyLogEvent({ event: 'reconcile_end', created, skipped, errors, nextAlarm: Number.isFinite(nextAlarm) ? new Date(nextAlarm).toISOString() : null }));
     if (Number.isFinite(nextAlarm)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, nextAlarm));
     return { checked: config.enabledRooms.length, created, skipped, errors };
   }
@@ -389,7 +395,7 @@ export class MarketScheduler extends DurableObject<Env> {
     const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 10_000, retryCount: 2 }) });
     const roomKey = keccak256(toBytes(roomId));
     const capabilities = await inspectAutomationContract(publicClient, config.contractAddress);
-    console.log(JSON.stringify({ event: 'ensure_start', roomId, roomKey, operator: account.address, capabilities }));
+    console.log(stringifyLogEvent({ event: 'ensure_start', roomId, roomKey, operator: account.address, capabilities }));
 
     let authorizedOperator: Hex;
     // First verify contract connectivity with a simpler call
@@ -400,10 +406,10 @@ export class MarketScheduler extends DurableObject<Env> {
         publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' }),
         publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'MIN_BETTING_PERIOD' }),
       ]);
-      console.log(JSON.stringify({ event: 'contract_connectivity_ok', roomId, nextMarketId: nextMarketId.toString(), minBettingPeriod: contractMinimumBettingPeriod.toString() }));
+      console.log(stringifyLogEvent({ event: 'contract_connectivity_ok', roomId, nextMarketId: nextMarketId.toString(), minBettingPeriod: contractMinimumBettingPeriod.toString() }));
     } catch (connectivityError) {
       const connectivityErrorMsg = connectivityError instanceof Error ? connectivityError.message : 'unknown';
-      console.error(JSON.stringify({
+      console.error(stringifyLogEvent({
         event: 'contract_connectivity_failed',
         roomId,
         contractAddress: config.contractAddress,
@@ -416,7 +422,7 @@ export class MarketScheduler extends DurableObject<Env> {
       authorizedOperator = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'roleAccount', args: [MARKET_ROLE] });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'unknown';
-      console.error(JSON.stringify({
+      console.error(stringifyLogEvent({
         event: 'contract_read_failed',
         roomId,
         roomKey,
@@ -431,16 +437,16 @@ export class MarketScheduler extends DurableObject<Env> {
     if (authorizedOperator.toLowerCase() !== account.address.toLowerCase()) throw new Error(`Configured MARKET_ROLE is ${authorizedOperator}, not the automation signer ${account.address}`);
 
     const roomZone = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'roomZones', args: [roomKey] });
-    console.log(JSON.stringify({ event: 'room_zone_raw', roomId, roomKey, roomZoneLength: Array.isArray(roomZone) ? roomZone.length : 'not_array', roomZone }));
+    console.log(stringifyLogEvent({ event: 'room_zone_raw', roomId, roomKey, roomZoneLength: Array.isArray(roomZone) ? roomZone.length : 'not_array', roomZone }));
     const zoneVersion = Number(roomZone[1]);
     if (zoneVersion === 0) {
-      console.log(JSON.stringify({ event: 'no_zone_published', roomId, zoneVersion }));
+      console.log(stringifyLogEvent({ event: 'no_zone_published', roomId, zoneVersion }));
       throw new SchedulerConfigurationError(`On-chain detection zone is missing for ${roomId}. Publish the saved zone from /admin/zones before enabling automated rounds.`);
     }
-    console.log(JSON.stringify({ event: 'zone_published', roomId, zoneVersion }));
+    console.log(stringifyLogEvent({ event: 'zone_published', roomId, zoneVersion }));
 
-    let latestMarketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
-    console.log(JSON.stringify({ event: 'latest_market_id', roomId, latestMarketId: latestMarketId.toString(), hasRoomRegistry: capabilities.hasRoomRegistry }));
+    const latestMarketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
+    console.log(stringifyLogEvent({ event: 'latest_market_id', roomId, latestMarketId: latestMarketId.toString(), hasRoomRegistry: capabilities.hasRoomRegistry }));
     if (latestMarketId > 0n) {
       try {
         const marketTuple = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [latestMarketId] }) as readonly [
@@ -449,30 +455,32 @@ export class MarketScheduler extends DurableObject<Env> {
           number, `0x${string}`, `0x${string}`, `0x${string}`, `0x${string}`,
           bigint, bigint
         ];
-        console.log(JSON.stringify({ event: 'market_tuple_raw', roomId, marketId: latestMarketId.toString(), tupleLength: marketTuple.length, roomIdFromTuple: marketTuple[0], status: marketTuple[13], closeTime: marketTuple[1] }));
+        console.log(stringifyLogEvent({ event: 'market_tuple_raw', roomId, marketId: latestMarketId.toString(), tupleLength: marketTuple.length, roomIdFromTuple: marketTuple[0], status: marketTuple[13], closeTime: marketTuple[1] }));
         const roomKeyFromMarket = marketTuple[0] as `0x${string}`;
         const status = marketTuple[13] as number;
         const closeTime = Number(marketTuple[1]);
-        console.log(JSON.stringify({ event: 'existing_market_check', roomId, marketId: latestMarketId.toString(), status, closeTime, roomKeyMatch: roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase() }));
+        console.log(stringifyLogEvent({ event: 'existing_market_check', roomId, marketId: latestMarketId.toString(), status, closeTime, roomKeyMatch: roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase() }));
         if (roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase()) {
           if (shouldKeepExistingMarket(status, closeTime, Math.floor(Date.now() / 1_000), capabilities.supportsRollingMarkets)) {
             this.record(roomId, latestMarketId.toString(), closeTime, null, null);
-            console.log(JSON.stringify({ event: 'existing_market_active', roomId, marketId: latestMarketId.toString(), status, closeTime }));
+            console.log(stringifyLogEvent({ event: 'existing_market_active', roomId, marketId: latestMarketId.toString(), status, closeTime }));
             return { created: false, marketId: latestMarketId.toString(), closeTime };
           }
-          console.log(JSON.stringify({ event: 'existing_market_terminal', roomId, marketId: latestMarketId.toString(), status }));
+          console.log(stringifyLogEvent({ event: 'existing_market_terminal', roomId, marketId: latestMarketId.toString(), status }));
         }
       } catch (err) {
-        // A stale compatibility log must not prevent the next round.
-        console.warn(JSON.stringify({ event: 'existing_market_read_failed', roomId, marketId: latestMarketId.toString(), error: err instanceof Error ? err.message : 'unknown' }));
-        latestMarketId = 0n;
+        const message = err instanceof Error ? err.message : 'unknown';
+        console.warn(stringifyLogEvent({ event: 'existing_market_read_failed', roomId, marketId: latestMarketId.toString(), error: message }));
+        // A failed read or log must never be interpreted as permission to
+        // create a duplicate. Reconciliation will retry this room safely.
+        throw new Error(`Could not verify market ${latestMarketId} for ${roomId}: ${message}`);
       }
     }
 
     const pending = this.ctx.storage.sql.exec<{ tx_hash: string; close_time: number; updated_at: number }>(
       'SELECT tx_hash,close_time,updated_at FROM room_state WHERE room_id=? AND market_id IS NULL AND tx_hash IS NOT NULL', roomId,
     ).toArray()[0];
-    console.log(JSON.stringify({ event: 'pending_tx_check', roomId, hasPending: Boolean(pending), pendingAge: pending ? Date.now() - pending.updated_at : null }));
+    console.log(stringifyLogEvent({ event: 'pending_tx_check', roomId, hasPending: Boolean(pending), pendingAge: pending ? Date.now() - pending.updated_at : null }));
     if (pending && Date.now() - pending.updated_at < 120_000) {
       try {
         const receipt = await publicClient.getTransactionReceipt({ hash: pending.tx_hash as Hex });
@@ -480,15 +488,15 @@ export class MarketScheduler extends DurableObject<Env> {
           const confirmedId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
           if (confirmedId !== 0n) {
             this.record(roomId, confirmedId.toString(), pending.close_time, pending.tx_hash, null);
-            console.log(JSON.stringify({ event: 'pending_tx_confirmed', roomId, txHash: pending.tx_hash, confirmedId: confirmedId.toString() }));
+            console.log(stringifyLogEvent({ event: 'pending_tx_confirmed', roomId, txHash: pending.tx_hash, confirmedId: confirmedId.toString() }));
             return { created: false, marketId: confirmedId.toString(), closeTime: pending.close_time };
           }
-          console.log(JSON.stringify({ event: 'pending_tx_success_but_no_market', roomId, txHash: pending.tx_hash }));
+          console.log(stringifyLogEvent({ event: 'pending_tx_success_but_no_market', roomId, txHash: pending.tx_hash }));
         } else {
-          console.log(JSON.stringify({ event: 'pending_tx_reverted', roomId, txHash: pending.tx_hash, receiptStatus: receipt.status }));
+          console.log(stringifyLogEvent({ event: 'pending_tx_reverted', roomId, txHash: pending.tx_hash, receiptStatus: receipt.status }));
         }
       } catch (err) {
-        console.log(JSON.stringify({ event: 'pending_tx_still_pending', roomId, txHash: pending.tx_hash, error: err instanceof Error ? err.message : 'unknown' }));
+        console.log(stringifyLogEvent({ event: 'pending_tx_still_pending', roomId, txHash: pending.tx_hash, error: err instanceof Error ? err.message : 'unknown' }));
         // The transaction is still pending or the RPC has not indexed it yet.
         return { created: false, marketId: 'pending', closeTime: Math.floor(Date.now() / 1_000) + 15 };
       }
@@ -500,7 +508,7 @@ export class MarketScheduler extends DurableObject<Env> {
     const effectiveBettingWindow = Math.max(config.bettingWindowSeconds, Number(contractMinimumBettingPeriod) + 2);
     const closeTime = now + effectiveBettingWindow;
     const resolveDeadline = closeTime + config.resolutionWindowSeconds;
-    console.log(JSON.stringify({ event: 'create_market_plan', roomId, now, effectiveBettingWindow, closeTime, resolveDeadline, minPeriod: contractMinimumBettingPeriod.toString() }));
+    console.log(stringifyLogEvent({ event: 'create_market_plan', roomId, now, effectiveBettingWindow, closeTime, resolveDeadline, minPeriod: contractMinimumBettingPeriod.toString() }));
     const simulation = await publicClient.simulateContract({
       account,
       address: config.contractAddress,
@@ -508,7 +516,7 @@ export class MarketScheduler extends DurableObject<Env> {
       functionName: 'createMarket',
       args: [roomKey, BigInt(closeTime), BigInt(resolveDeadline), config.lowerBound, config.upperBound, config.exactTarget, config.feeBps],
     });
-    console.log(JSON.stringify({
+    console.log(stringifyLogEvent({
       event: 'create_market_simulation_success',
       roomId,
       closeTime,
@@ -532,7 +540,7 @@ export class MarketScheduler extends DurableObject<Env> {
         const message = writeError instanceof Error ? writeError.message : 'unknown';
         const nonceTooLow = /nonce too low|nonce is lower than the current nonce/i.test(message) || /nonce provided.*lower than the current nonce/i.test(message);
         if (nonceTooLow && nonceRetry < MAX_NONCE_RETRIES - 1) {
-          console.warn(JSON.stringify({ event: 'nonce_too_low_retry', roomId, attempt: nonceRetry + 1, error: message }));
+          console.warn(stringifyLogEvent({ event: 'nonce_too_low_retry', roomId, attempt: nonceRetry + 1, error: message }));
           await new Promise(resolve => setTimeout(resolve, 500));
           continue;
         }
@@ -540,7 +548,7 @@ export class MarketScheduler extends DurableObject<Env> {
       }
     }
     if (!txHash) throw new Error(`Failed to send market creation transaction for ${roomId} after ${MAX_NONCE_RETRIES} nonce retries`);
-    console.log(JSON.stringify({
+    console.log(stringifyLogEvent({
       event: 'create_market_tx_sent',
       roomId,
       txHash
@@ -548,7 +556,7 @@ export class MarketScheduler extends DurableObject<Env> {
     this.record(roomId, null, closeTime, txHash, null);
     const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash, confirmations: 1, timeout: 45_000 });
     if (receipt.status !== 'success') {
-      console.error(JSON.stringify({
+      console.error(stringifyLogEvent({
         event: 'tx_reverted',
         roomId,
         txHash,
@@ -558,7 +566,7 @@ export class MarketScheduler extends DurableObject<Env> {
     }
     const marketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
     if (marketId === 0n) {
-      console.error(JSON.stringify({
+      console.error(stringifyLogEvent({
         event: 'market_pointer_not_updated',
         roomId,
         roomKey,
@@ -569,7 +577,7 @@ export class MarketScheduler extends DurableObject<Env> {
       throw new Error(`Market creation confirmed without updating the room pointer: ${txHash}`);
     }
     this.record(roomId, marketId.toString(), closeTime, txHash, null);
-    console.log(JSON.stringify({ event: 'market_round_created', roomId, marketId: marketId.toString(), closeTime, txHash }));
+    console.log(stringifyLogEvent({ event: 'market_round_created', roomId, marketId: marketId.toString(), closeTime, txHash }));
     return { created: true, marketId: marketId.toString(), closeTime };
   }
 
@@ -583,11 +591,11 @@ export class MarketScheduler extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    console.log(JSON.stringify({ event: 'scheduler_alarm_triggered' }));
+    console.log(stringifyLogEvent({ event: 'scheduler_alarm_triggered' }));
     try {
       await this.reconcile();
     } catch (error) {
-      console.error(JSON.stringify({ event: 'market_scheduler_alarm_failed', error: error instanceof Error ? error.message : 'unknown' }));
+      console.error(stringifyLogEvent({ event: 'market_scheduler_alarm_failed', error: error instanceof Error ? error.message : 'unknown' }));
       await this.ctx.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
     }
   }
