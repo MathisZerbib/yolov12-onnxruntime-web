@@ -12,6 +12,8 @@
 
 # testing
 /coverage
+/playwright-report
+/test-results
 
 # next.js
 /.next/
@@ -53,6 +55,7 @@ next-env.d.ts
 # build output
 dist/
 .wrangler/
+/.wrangler.production.jsonc
 /artifacts/
 /cache/
 

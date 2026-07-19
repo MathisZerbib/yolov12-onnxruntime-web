@@ -55,7 +55,7 @@ export default function LiveTrafficGame() {
         <div className="globe-stage">
           <div className="globe-heading"><span>LIVE WORLD FEED</span><b>{ROOMS.reduce((sum, room) => sum + room.viewers, 0).toLocaleString()} WATCHING</b></div>
           <ScrollGlobe onLocationClick={handleOpenRoom} />
-          <div className="globe-caption"><Crosshair /> Drag to explore · Select a signal to enter</div>
+          <div className="globe-caption"><Crosshair /> Drag to explore · Select a room to enter</div>
         </div>
       </section>
 

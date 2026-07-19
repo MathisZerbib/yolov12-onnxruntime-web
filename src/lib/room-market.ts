@@ -21,6 +21,7 @@ export interface RoomMarketState {
   nextRoundExpectedAt: number | null;
   staleAfter: number;
   roundDurationSeconds?: number;
+  receivedAtMs?: number;
   error?: string;
 }
 
@@ -53,7 +54,8 @@ export function useRoomMarket(roomId: string | undefined) {
       const body = await response.json().catch(() => null) as RoomMarketState | { error?: string } | null;
       if (!response.ok || !body || !('phase' in body)) throw new Error(body?.error || 'Round service is unavailable');
       if (sequence !== requestSequence.current) return;
-      const market = body as RoomMarketState;
+      const market = { ...(body as RoomMarketState), receivedAtMs: Date.now() };
+      console.log(JSON.stringify({ event: 'market_api_response', roomId, phase: market.phase, marketId: market.marketId, closeTime: market.closeTime, serverTime: market.serverTime, staleAfter: market.staleAfter, nextRoundExpectedAt: market.nextRoundExpectedAt, enabled: market.enabled, error: market.error }));
       setSnapshot({ market, loading: false, stale: market.staleAfter <= market.serverTime, error: market.error ?? '', syncedAt: Date.now() });
     } catch (error) {
       if (sequence !== requestSequence.current) return;

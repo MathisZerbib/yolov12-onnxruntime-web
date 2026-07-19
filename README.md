@@ -40,6 +40,17 @@ npm run build
 
 The built files will be in the `dist` directory, ready to be deployed to GitHub Pages or any static hosting service.
 
+### Test and release gates
+
+```bash
+npm test                    # frontend unit/component + Worker runtime tests
+npm run test:unit:coverage  # enforced core-logic coverage thresholds
+npm run test:e2e            # Chromium route, responsive, and accessibility cases
+npm run check               # complete local CI gate
+```
+
+Pull requests and `main` run the same gates in GitHub Actions. A successful `main` run unlocks guarded GitHub Pages and Cloudflare Worker deployments. See [Testing and delivery](./docs/07-testing-and-delivery.md) for the use-case matrix, required environment configuration, rollback procedure, and release ownership.
+
 ## 🏗️ Architecture
 
 ```mermaid

@@ -46,11 +46,7 @@ const trafficMarketAbi = [
   { type: 'function', name: 'nextMarketId', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint256' }] },
   { type: 'function', name: 'MIN_BETTING_PERIOD', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint64' }] },
   { type: 'function', name: 'roomZones', stateMutability: 'view', inputs: [{ name: 'roomId', type: 'bytes32' }], outputs: [
-    { name: 'topLeftXBps', type: 'uint16' }, { name: 'topLeftYBps', type: 'uint16' },
-    { name: 'topRightXBps', type: 'uint16' }, { name: 'topRightYBps', type: 'uint16' },
-    { name: 'bottomRightXBps', type: 'uint16' }, { name: 'bottomRightYBps', type: 'uint16' },
-    { name: 'bottomLeftXBps', type: 'uint16' }, { name: 'bottomLeftYBps', type: 'uint16' },
-    { name: 'version', type: 'uint32' }, { name: 'configHash', type: 'bytes32' },
+    { name: '', type: 'uint16[8]' }, { name: 'version', type: 'uint32' }, { name: 'configHash', type: 'bytes32' }
   ] },
   { type: 'error', name: 'InvalidConfiguration', inputs: [] },
   { type: 'error', name: 'ActiveMarketExists', inputs: [{ name: 'marketId', type: 'uint256' }] },
@@ -160,6 +156,22 @@ function phaseFor(status: number, closeTime: number, nowSeconds: number): Player
   return 'unavailable';
 }
 
+export function shouldKeepExistingMarket(
+  status: number,
+  closeTime: number,
+  nowSeconds: number,
+  supportsRollingMarkets: boolean,
+): boolean {
+  if (!supportsRollingMarkets) return status === 1 || status === 2 || status === 3;
+  return status === 1 && closeTime > nowSeconds + NEXT_ROUND_LEAD_SECONDS;
+}
+
+export function nextRoundAlarmSeconds(closeTime: number, supportsRollingMarkets: boolean, nowSeconds: number): number {
+  return supportsRollingMarkets
+    ? closeTime - NEXT_ROUND_LEAD_SECONDS
+    : Math.max(closeTime + 1, nowSeconds + RETRY_DELAY_MS / 1_000);
+}
+
 async function inspectAutomationContract(
   publicClient: ReturnType<typeof createPublicClient>,
   contractAddress: `0x${string}`,
@@ -228,17 +240,17 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
       findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry),
       publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'roomZones', args: [roomKey] }),
     ]);
-    if (Number(roomZone[8]) === 0) return {
-      roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
-      lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
+    if (Number(roomZone[1]) === 0) return {
+      roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null,
+      resolveDeadline: null, lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
       totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: null, staleAfter: serverTime + 30,
       error: 'This room is waiting for its one-time on-chain zone publication', retryable: false,
       roundDurationSeconds: config.bettingWindowSeconds,
     };
     if (marketId === 0n) return {
-      roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
-      lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
-      totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: serverTime + 30, staleAfter: serverTime + 10,
+      roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null,
+      resolveDeadline: null, lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
+      totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: null, staleAfter: serverTime + 10,
       error: 'Preparing the first round',
       retryable: true,
       roundDurationSeconds: config.bettingWindowSeconds,
@@ -247,6 +259,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
       publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [marketId] }),
       ...([1, 2, 3, 4] as const).map(outcome => publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'outcomePools', args: [marketId, outcome] })),
     ]);
+    console.log(JSON.stringify({ event: 'market_read_raw', roomId, marketId: marketId.toString(), marketResultType: typeof marketResult, marketResultLength: Array.isArray(marketResult) ? marketResult.length : 'n/a' }));
     const market = marketResult as readonly [
       `0x${string}`, bigint, bigint, bigint, bigint, bigint,
       number, number, number, number, number, number, number,
@@ -262,11 +275,12 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
     const status = market[13] as number;
     const totalPool = market[18];
     const phase = phaseFor(status, closeTime, serverTime);
+    console.log(JSON.stringify({ event: 'read_market_state', roomId, marketId: marketId.toString(), status, phase, closeTime, serverTime, staleAfter: serverTime + 10 }));
     return {
       roomId, roomKey, enabled, serverTime, phase, marketId: marketId.toString(), closeTime,
       resolveDeadline, lowerBound, upperBound, exactTarget, feeBps, totalPoolWei: totalPool.toString(),
       outcomePoolsWei: [underPool.toString(), rangePool.toString(), overPool.toString(), exactPool.toString()],
-      nextRoundExpectedAt: phase === 'open' ? closeTime : serverTime + 30, staleAfter: serverTime + 10,
+      nextRoundExpectedAt: phase === 'open' ? closeTime : null, staleAfter: serverTime + 10,
       roundDurationSeconds: config.bettingWindowSeconds,
     };
   } catch (error) {
@@ -276,7 +290,7 @@ export async function readRoomMarketState(env: Env, roomId: string): Promise<Roo
     return {
       roomId, roomKey, enabled, serverTime, phase: 'unavailable', marketId: null, closeTime: null, resolveDeadline: null,
       lowerBound: config.lowerBound, upperBound: config.upperBound, exactTarget: config.exactTarget, feeBps: config.feeBps,
-      totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: serverTime + 30, staleAfter: serverTime + 10,
+      totalPoolWei: '0', outcomePoolsWei: ['0', '0', '0', '0'], nextRoundExpectedAt: null, staleAfter: serverTime + 10,
       error: configurationError ? errorMessage : 'Could not synchronize this room with Arbitrum Sepolia', retryable: !configurationError,
       roundDurationSeconds: config.bettingWindowSeconds,
     };
@@ -320,6 +334,8 @@ export class MarketScheduler extends DurableObject<Env> {
       return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
 
+    console.log(JSON.stringify({ event: 'reconcile_start', rooms: config.enabledRooms.length, contract: config.contractAddress, rpc: config.rpcUrl }));
+
     const capabilityClient = createPublicClient({ chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 8_000, retryCount: 2 }) });
     let contractCapabilities: { hasRoomRegistry: boolean; supportsRollingMarkets: boolean };
     try {
@@ -330,6 +346,7 @@ export class MarketScheduler extends DurableObject<Env> {
       await this.ctx.storage.deleteAlarm();
       return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
+    console.log(JSON.stringify({ event: 'contract_capabilities', hasRoomRegistry: contractCapabilities.hasRoomRegistry, supportsRollingMarkets: contractCapabilities.supportsRollingMarkets }));
 
     let created = 0;
     let skipped = 0;
@@ -338,10 +355,14 @@ export class MarketScheduler extends DurableObject<Env> {
     for (const roomId of config.enabledRooms) {
       try {
         const result = await this.ensureBettingRound(config, roomId);
+        console.log(JSON.stringify({ event: 'ensure_result', roomId, created: result.created, marketId: result.marketId, closeTime: result.closeTime }));
         if (result.created) created++;
         if (result.closeTime) {
-          const lead = contractCapabilities.supportsRollingMarkets ? NEXT_ROUND_LEAD_SECONDS : -1;
-          nextAlarm = Math.min(nextAlarm, (result.closeTime - lead) * 1_000);
+          nextAlarm = Math.min(nextAlarm, nextRoundAlarmSeconds(
+            result.closeTime,
+            contractCapabilities.supportsRollingMarkets,
+            Math.floor(Date.now() / 1_000),
+          ) * 1_000);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown scheduler error';
@@ -356,6 +377,7 @@ export class MarketScheduler extends DurableObject<Env> {
         }
       }
     }
+    console.log(JSON.stringify({ event: 'reconcile_end', created, skipped, errors, nextAlarm: Number.isFinite(nextAlarm) ? new Date(nextAlarm).toISOString() : null }));
     if (Number.isFinite(nextAlarm)) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1_000, nextAlarm));
     return { checked: config.enabledRooms.length, created, skipped, errors };
   }
@@ -367,6 +389,7 @@ export class MarketScheduler extends DurableObject<Env> {
     const walletClient = createWalletClient({ account, chain: arbitrumSepolia, transport: http(config.rpcUrl, { timeout: 10_000, retryCount: 2 }) });
     const roomKey = keccak256(toBytes(roomId));
     const capabilities = await inspectAutomationContract(publicClient, config.contractAddress);
+    console.log(JSON.stringify({ event: 'ensure_start', roomId, roomKey, operator: account.address, capabilities }));
 
     let authorizedOperator: Hex;
     // First verify contract connectivity with a simpler call
@@ -377,6 +400,7 @@ export class MarketScheduler extends DurableObject<Env> {
         publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'nextMarketId' }),
         publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'MIN_BETTING_PERIOD' }),
       ]);
+      console.log(JSON.stringify({ event: 'contract_connectivity_ok', roomId, nextMarketId: nextMarketId.toString(), minBettingPeriod: contractMinimumBettingPeriod.toString() }));
     } catch (connectivityError) {
       const connectivityErrorMsg = connectivityError instanceof Error ? connectivityError.message : 'unknown';
       console.error(JSON.stringify({
@@ -407,12 +431,16 @@ export class MarketScheduler extends DurableObject<Env> {
     if (authorizedOperator.toLowerCase() !== account.address.toLowerCase()) throw new Error(`Configured MARKET_ROLE is ${authorizedOperator}, not the automation signer ${account.address}`);
 
     const roomZone = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'roomZones', args: [roomKey] });
-    const zoneVersion = Number(roomZone[8]);
+    console.log(JSON.stringify({ event: 'room_zone_raw', roomId, roomKey, roomZoneLength: Array.isArray(roomZone) ? roomZone.length : 'not_array', roomZone }));
+    const zoneVersion = Number(roomZone[1]);
     if (zoneVersion === 0) {
+      console.log(JSON.stringify({ event: 'no_zone_published', roomId, zoneVersion }));
       throw new SchedulerConfigurationError(`On-chain detection zone is missing for ${roomId}. Publish the saved zone from /admin/zones before enabling automated rounds.`);
     }
+    console.log(JSON.stringify({ event: 'zone_published', roomId, zoneVersion }));
 
     let latestMarketId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
+    console.log(JSON.stringify({ event: 'latest_market_id', roomId, latestMarketId: latestMarketId.toString(), hasRoomRegistry: capabilities.hasRoomRegistry }));
     if (latestMarketId > 0n) {
       try {
         const marketTuple = await publicClient.readContract({ address: config.contractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [latestMarketId] }) as readonly [
@@ -421,18 +449,22 @@ export class MarketScheduler extends DurableObject<Env> {
           number, `0x${string}`, `0x${string}`, `0x${string}`, `0x${string}`,
           bigint, bigint
         ];
+        console.log(JSON.stringify({ event: 'market_tuple_raw', roomId, marketId: latestMarketId.toString(), tupleLength: marketTuple.length, roomIdFromTuple: marketTuple[0], status: marketTuple[13], closeTime: marketTuple[1] }));
         const roomKeyFromMarket = marketTuple[0] as `0x${string}`;
+        const status = marketTuple[13] as number;
+        const closeTime = Number(marketTuple[1]);
+        console.log(JSON.stringify({ event: 'existing_market_check', roomId, marketId: latestMarketId.toString(), status, closeTime, roomKeyMatch: roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase() }));
         if (roomKeyFromMarket.toLowerCase() === roomKey.toLowerCase()) {
-          const closeTime = Number(marketTuple[1]);
-          const status = marketTuple[13] as number;
-          const leadSeconds = capabilities.supportsRollingMarkets ? NEXT_ROUND_LEAD_SECONDS : 0;
-          if (status === 1 && closeTime > Math.floor(Date.now() / 1_000) + leadSeconds) {
+          if (shouldKeepExistingMarket(status, closeTime, Math.floor(Date.now() / 1_000), capabilities.supportsRollingMarkets)) {
             this.record(roomId, latestMarketId.toString(), closeTime, null, null);
+            console.log(JSON.stringify({ event: 'existing_market_active', roomId, marketId: latestMarketId.toString(), status, closeTime }));
             return { created: false, marketId: latestMarketId.toString(), closeTime };
           }
+          console.log(JSON.stringify({ event: 'existing_market_terminal', roomId, marketId: latestMarketId.toString(), status }));
         }
-      } catch {
+      } catch (err) {
         // A stale compatibility log must not prevent the next round.
+        console.warn(JSON.stringify({ event: 'existing_market_read_failed', roomId, marketId: latestMarketId.toString(), error: err instanceof Error ? err.message : 'unknown' }));
         latestMarketId = 0n;
       }
     }
@@ -440,6 +472,7 @@ export class MarketScheduler extends DurableObject<Env> {
     const pending = this.ctx.storage.sql.exec<{ tx_hash: string; close_time: number; updated_at: number }>(
       'SELECT tx_hash,close_time,updated_at FROM room_state WHERE room_id=? AND market_id IS NULL AND tx_hash IS NOT NULL', roomId,
     ).toArray()[0];
+    console.log(JSON.stringify({ event: 'pending_tx_check', roomId, hasPending: Boolean(pending), pendingAge: pending ? Date.now() - pending.updated_at : null }));
     if (pending && Date.now() - pending.updated_at < 120_000) {
       try {
         const receipt = await publicClient.getTransactionReceipt({ hash: pending.tx_hash as Hex });
@@ -447,10 +480,15 @@ export class MarketScheduler extends DurableObject<Env> {
           const confirmedId = await findLatestMarketId(publicClient, config.contractAddress, roomKey, capabilities.hasRoomRegistry);
           if (confirmedId !== 0n) {
             this.record(roomId, confirmedId.toString(), pending.close_time, pending.tx_hash, null);
+            console.log(JSON.stringify({ event: 'pending_tx_confirmed', roomId, txHash: pending.tx_hash, confirmedId: confirmedId.toString() }));
             return { created: false, marketId: confirmedId.toString(), closeTime: pending.close_time };
           }
+          console.log(JSON.stringify({ event: 'pending_tx_success_but_no_market', roomId, txHash: pending.tx_hash }));
+        } else {
+          console.log(JSON.stringify({ event: 'pending_tx_reverted', roomId, txHash: pending.tx_hash, receiptStatus: receipt.status }));
         }
-      } catch {
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'pending_tx_still_pending', roomId, txHash: pending.tx_hash, error: err instanceof Error ? err.message : 'unknown' }));
         // The transaction is still pending or the RPC has not indexed it yet.
         return { created: false, marketId: 'pending', closeTime: Math.floor(Date.now() / 1_000) + 15 };
       }
@@ -462,6 +500,7 @@ export class MarketScheduler extends DurableObject<Env> {
     const effectiveBettingWindow = Math.max(config.bettingWindowSeconds, Number(contractMinimumBettingPeriod) + 2);
     const closeTime = now + effectiveBettingWindow;
     const resolveDeadline = closeTime + config.resolutionWindowSeconds;
+    console.log(JSON.stringify({ event: 'create_market_plan', roomId, now, effectiveBettingWindow, closeTime, resolveDeadline, minPeriod: contractMinimumBettingPeriod.toString() }));
     const simulation = await publicClient.simulateContract({
       account,
       address: config.contractAddress,
@@ -544,6 +583,7 @@ export class MarketScheduler extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    console.log(JSON.stringify({ event: 'scheduler_alarm_triggered' }));
     try {
       await this.reconcile();
     } catch (error) {

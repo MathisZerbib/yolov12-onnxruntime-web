@@ -5,6 +5,7 @@ import { arbitrumSepolia } from 'wagmi/chains';
 import { GAME_CONFIG } from '@/config/game-config';
 import { marketContractAddress, marketRoomKey, trafficMarketAbi } from '@/lib/market-contract';
 import type { RoomMarketState } from '@/lib/room-market';
+import { formatRoundUnavailable } from '@/lib/round-availability';
 import { TransactionStatus, type TransactionState } from './transaction-status';
 
 interface PlacePositionButtonProps {
@@ -14,6 +15,7 @@ interface PlacePositionButtonProps {
   outcome: number;
   amount: string;
   onConfirmed?: () => void;
+  error?: string;
 }
 
 const AMOUNT_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/;
@@ -32,11 +34,12 @@ function messageFromError(error: Error): string {
   return cause.shortMessage ?? cause.message;
 }
 
-export function PlacePositionButton({ roomId, market, stale, outcome, amount, onConfirmed }: PlacePositionButtonProps) {
+export function PlacePositionButton({ roomId, market, stale, outcome, amount, onConfirmed, error: externalError }: PlacePositionButtonProps) {
   const { address, isConnected, chainId } = useAccount();
   const [error, setError] = useState('');
   const [hash, setHash] = useState<`0x${string}`>();
   const [txState, setTxState] = useState<TransactionState>();
+  const [clockMs, setClockMs] = useState(() => Date.now());
   const submissionLock = useRef(false);
   const submittedMarketId = useRef<string | null>(null);
   const { writeContractAsync } = useWriteContract();
@@ -46,6 +49,13 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
   const canonicalRoom = Boolean(market && market.roomKey.toLowerCase() === marketRoomKey(roomId).toLowerCase());
   const marketOpen = Boolean(market?.marketId && market.phase === 'open' && canonicalRoom && !stale);
   const transactionBusy = txState === 'AWAITING_SIGNATURE' || txState === 'PENDING' || txState === 'SUBMITTED';
+
+  useEffect(() => {
+    if (!market?.nextRoundExpectedAt || marketOpen) return;
+    setClockMs(Date.now());
+    const timer = window.setInterval(() => setClockMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [market?.nextRoundExpectedAt, marketOpen]);
 
   useEffect(() => {
     if (!hash || !publicClient) return;
@@ -65,9 +75,8 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
   }, [hash, onConfirmed, publicClient]);
 
   useEffect(() => {
-    if (transactionBusy) return;
     setError('');
-    if (submittedMarketId.current !== market?.marketId) {
+    if (!transactionBusy && submittedMarketId.current !== market?.marketId) {
       setHash(undefined);
       setTxState(undefined);
       submittedMarketId.current = null;
@@ -76,11 +85,7 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
 
   async function place() {
     if (submissionLock.current || transactionBusy) return;
-    setError('');
-    if (!address || !publicClient || !market?.marketId || !marketOpen) {
-      setError('Opening a fresh game. Your bet draft is preserved—try again in a moment.');
-      return;
-    }
+    if (!address || !publicClient || !market?.marketId || !marketOpen) return;
     if (!amountValid) { setError(`Stake must be between ${GAME_CONFIG.BETTING.MIN_ETH} and ${GAME_CONFIG.BETTING.MAX_ETH} ETH.`); return; }
     submissionLock.current = true;
     submittedMarketId.current = market.marketId;
@@ -99,19 +104,35 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
     }
   }
 
-  const label = !isConnected ? 'Connect wallet to bet'
-    : chainId !== arbitrumSepolia.id ? 'Switch to Arbitrum Sepolia'
-      : stale ? 'Refreshing round…'
-        : !market?.enabled ? 'Rounds coming soon'
-          : !marketOpen ? 'Opening your game…'
-              : !amountValid ? 'Enter a valid stake'
-                : txState === 'AWAITING_SIGNATURE' ? 'Confirm in wallet…'
-                  : txState === 'PENDING' || txState === 'SUBMITTED' ? 'Position pending…'
-                    : txState === 'CONFIRMED' ? 'Position opened' : `Place on round #${market.marketId}`;
+  const effectiveError = externalError || market?.error || '';
 
+  const holdReason = !isConnected
+    ? 'Connect wallet to bet'
+    : chainId !== arbitrumSepolia.id
+      ? 'Switch to Arbitrum Sepolia'
+      : (market?.error || externalError) && !marketOpen
+        ? effectiveError
+        : stale
+          ? 'Refreshing round…'
+          : !market?.enabled
+            ? 'Rounds coming soon'
+            : !marketOpen
+              ? formatRoundUnavailable(market, externalError, clockMs)
+              : !amountValid
+                ? 'Enter a valid stake'
+                : txState === 'AWAITING_SIGNATURE'
+                  ? 'Confirm in wallet…'
+                  : txState === 'PENDING' || txState === 'SUBMITTED'
+                    ? 'Position pending…'
+                    : txState === 'CONFIRMED'
+                      ? 'Position opened'
+                      : 'Ready to place';
+
+  const label = marketOpen && amountValid ? `Place on round #${market?.marketId}` : 'Hold';
   return <>
     <button className="place-position" disabled={!isConnected || chainId !== arbitrumSepolia.id || !marketOpen || !amountValid || transactionBusy} onClick={() => void place()}>{label}</button>
+    <p className="position-hold-reason">{holdReason}</p>
     {txState && <TransactionStatus state={txState} hash={hash} />}
-    {error && <p className="contract-error" role="alert">{error}</p>}
+    {txState === 'FAILED' && error && <p className="contract-error" role="alert">{error}</p>}
   </>;
 }
