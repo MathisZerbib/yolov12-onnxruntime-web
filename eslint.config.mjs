@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig([
-  globalIgnores(['dist/**', 'build/**', 'artifacts/**', 'cache/**', '.wrangler/**', '.agents/**', 'public/**', 'worker-configuration.d.ts']),
+  globalIgnores(['dist/**', 'build/**', 'artifacts/**', 'cache/**', 'coverage/**', 'playwright-report/**', 'test-results/**', '.wrangler/**', '.agents/**', 'public/**', 'worker-configuration.d.ts']),
   js.configs.recommended,
   ...tseslint.configs.recommended,
   reactHooks.configs.flat.recommended,

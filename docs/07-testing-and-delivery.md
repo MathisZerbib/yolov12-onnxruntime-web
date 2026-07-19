@@ -20,8 +20,12 @@ Crossflow has four automated test layers. Each layer owns a different failure bo
 | Market discovery | Open the home market and choose Paris | Selected room opens and round #42 is rendered from a deterministic API fixture | Browser |
 | Routing | Open every public and admin route directly | A meaningful page heading renders; no blank lazy route | Browser |
 | Accessibility | Scan the home task flow against WCAG 2 A/AA and 2.1 A/AA | No critical or serious Axe violations | Browser |
-| Responsive layout | Open home at 390×844 | Document remains inside the viewport | Browser |
+| Responsive layout | Open home and `/room/tokyo` at 390×844, then the room at 568×320 | Pages remain inside the viewport; the room stacks without crushing the stream | Browser |
+| Result presentation | Render win/loss settlement feedback | A focus-managed viewport-centered dialog shows ETH and live approximate USD, outside the betting panel | Component |
 | Round lifecycle | Reach the rolling-market lead boundary | Scheduler creates a replacement instead of holding an expired market | Worker unit |
+| Legacy round lifecycle | Close a non-rolling market | Scheduler advances only after close and never holds the expired market indefinitely | Worker unit |
+| Structured Worker logs | Log market tuples and receipts containing nested `bigint` values | Values serialize as decimal strings without changing scheduler control flow | Worker unit |
+| Deployment scheduler | Inspect Cloudflare after a Worker release | CI fails unless the live one-minute Cron Trigger is attached | Unit + deployment smoke |
 | Round timing | Render an absolute next-round deadline | Countdown decreases from 00:30 to 00:25 and never resets on each display tick | Unit |
 | Round recovery | No deterministic next-round timestamp exists | UI says the next round is opening instead of showing a fake 30-second loop | Unit |
 | Traffic counting | Vehicle starts outside, enters, then exits | One count and one count event are produced | Unit |
@@ -29,6 +33,7 @@ Crossflow has four automated test layers. Each layer owns a different failure bo
 | Detection zones | Check point inclusion, configuration changes, and reset | Polygon geometry is respected and stale tracks are cleared | Unit |
 | Bet drafts | Edit outcomes/stakes in two rooms | Drafts remain room-scoped, sanitized, clamped, persisted, and independently clearable | Unit |
 | Transaction feedback | Await signature, confirm, or fail | Correct status copy and safe Arbiscan link render | Component |
+| Player positions | Read open, expired, proposed, won, lost, cancelled, and claimed positions | No position is hidden; expired rounds expose refund recovery and mature proposals expose finalization | Unit + profile UI |
 | CORS | Send an allowed preflight | Credentialed CORS headers are returned | Worker integration |
 | Auth challenge | Request SIWE nonce from the app origin | Arbitrum Sepolia challenge is created in migrated D1 storage | Worker integration |
 | Auth abuse | Use a foreign origin or invalid wallet | Request is rejected with 403 or 400 | Worker integration |
@@ -77,7 +82,7 @@ Set repository Pages source to **GitHub Actions**. The workflow validates config
 | Secret | `CLOUDFLARE_D1_DATABASE_ID` | Production `crossflow-auth` D1 UUID |
 | Variable | `CROSSFLOW_APP_ORIGIN` | Exact deployed frontend origin, without a trailing slash |
 
-The workflow creates an ignored production Wrangler config at runtime, applies remote D1 migrations, deploys the Worker, and probes `/activity` on the deployment URL. The market operator key is not copied through GitHub. Provision it once as a Cloudflare Worker secret:
+The workflow creates an ignored production Wrangler config at runtime, applies remote D1 migrations, deploys the Worker, verifies the live one-minute Cron Trigger through Cloudflare's schedules API, and probes `/activity` on the deployment URL. The market operator key is not copied through GitHub. Provision it once as a Cloudflare Worker secret:
 
 ```bash
 npx wrangler secret put MARKET_OPERATOR_PRIVATE_KEY

@@ -24,6 +24,7 @@ This document provides a phased plan to take Crossflow from its current state to
 | Contract deployment admin flow | Done | `src/components/admin/contract-deployment-panel.tsx` |
 | Contract Solidity test suite | Done | `contracts/TrafficPredictionMarket.t.sol` |
 | Profile / Activity / Leaderboard | Done | `src/pages/ProfilePage.tsx`, etc. |
+| Claim history + expired refund recovery | Done | `src/components/player-claims.tsx` |
 | Admin pause / role rotation | Done | `src/components/admin/smart-contract-control-panel.tsx` |
 
 ### Incomplete (Blocking Full Game Loop)
@@ -31,11 +32,9 @@ This document provides a phased plan to take Crossflow from its current state to
 | Area | Status | Impact |
 |------|--------|--------|
 | Oracle `proposeResult` automation | Not started | Rounds never resolve |
-| Claim winnings UI | Not started | Winners cannot collect payouts |
 | Challenge submission UI | Not started | No dispute mechanism for users |
 | On-chain settlement pipeline | Partial | Betting works; resolution is manual |
 | Contract address consistency | Needs reconciliation | Config drift across files |
-| Production Worker deployment | Not in CI | Manual deploy only |
 | Stream source attestation | Not started | Trust boundary documented but unenforced |
 | NYC/London stream URLs | Incorrect feeds | Mislabeled Caltrans streams |
 
@@ -64,7 +63,7 @@ This document provides a phased plan to take Crossflow from its current state to
 - [ ] **1.7** Reconcile contract address across all config files
 - [ ] **1.8** Configure zones in `/admin/zones` and publish on-chain for `tokyo`
 - [ ] **1.9** Set `AUTO_MARKET_ROOMS=tokyo` in `wrangler.jsonc` (start with one room)
-- [ ] **1.10** Trigger scheduler: `curl http://localhost:8787/cdn-cgi/handler/scheduled`
+- [x] **1.10** Scheduler starts automatically with `npm run dev`; production uses Cloudflare Cron
 - [ ] **1.11** Navigate to `/room/tokyo` — verify market shows `open` phase
 - [ ] **1.12** Place a test bet (0.001 ETH minimum)
 - [ ] **1.13** Run operator detection flow: acquire lease → start detection → stop → submit manifest

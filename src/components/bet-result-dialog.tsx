@@ -8,6 +8,8 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { formatEthUsd } from '@/lib/eth-usd';
+import type { EthUsdPrice } from '@/lib/use-eth-usd-price';
 
 export type BetResultState = 'win' | 'loss' | 'refund';
 
@@ -17,19 +19,23 @@ interface BetResultDialogProps {
   settled: boolean;
   totalReturn?: string;
   stake?: string;
+  ethUsdPrice?: EthUsdPrice;
   onContinue: () => void;
 }
 
-export function BetResultDialog({ state, finalCount, settled, totalReturn, stake, onContinue }: BetResultDialogProps) {
+export function BetResultDialog({ state, finalCount, settled, totalReturn, stake, ethUsdPrice, onContinue }: BetResultDialogProps) {
   const continueButtonRef = useRef<HTMLButtonElement>(null);
   const title = state === 'win' ? 'YOU WIN' : state === 'loss' ? 'YOU LOST' : 'ROUND REFUNDED';
   const detail = state === 'win'
     ? settled
       ? `${totalReturn ?? 'Your payout'} ETH is ready to claim`
-      : `Detected ${finalCount} vehicles · payout finalizing`
+      : `Local count ${finalCount} matched · awaiting verified settlement`
     : state === 'loss'
       ? `Final count: ${finalCount}`
       : `${stake ?? 'Your stake'} ETH is ready to reclaim`;
+  const resultAmount = state === 'win' ? totalReturn : stake;
+  const amountLabel = state === 'win' ? settled ? 'Payout' : 'Potential payout' : state === 'loss' ? settled ? 'Stake lost' : 'Stake at risk' : 'Refund';
+  const usdAmount = resultAmount && typeof ethUsdPrice === 'number' ? formatEthUsd(resultAmount, ethUsdPrice) : null;
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onContinue(); }}>
@@ -46,9 +52,14 @@ export function BetResultDialog({ state, finalCount, settled, totalReturn, stake
           {state === 'win' ? <Trophy /> : state === 'loss' ? <XCircle /> : <RotateCcw />}
         </span>
         <div className="bet-result-copy">
-          <span>Round result</span>
+          <span>{settled ? 'Finalized on-chain' : 'Local result · settlement pending'}</span>
           <DialogTitle className="bet-result-title">{title}</DialogTitle>
           <DialogDescription className="bet-result-detail">{detail}</DialogDescription>
+        </div>
+        <div className="bet-result-money" aria-label={`${amountLabel} in ETH and US dollars`}>
+          <span>{amountLabel}</span>
+          <strong>{resultAmount ?? '—'} ETH</strong>
+          <b>{usdAmount ? `≈ ${usdAmount} USD` : ethUsdPrice === undefined ? 'Updating USD value…' : 'USD rate unavailable'}</b>
         </div>
         <div className="bet-result-actions">
           {settled && state !== 'loss' && (

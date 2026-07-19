@@ -10,6 +10,7 @@ import { BetResultDialog } from '@/components/bet-result-dialog';
 import type { RoomMarketState } from '@/lib/room-market';
 import { DEFAULT_BET_DRAFT, useGameUiStore } from '@/stores/game-ui-store';
 import { marketContractAddress, trafficMarketAbi } from '@/lib/market-contract';
+import { useEthUsdPrice } from '@/lib/use-eth-usd-price';
 
 interface RoomBettingConsoleProps {
   roomId: string;
@@ -66,6 +67,7 @@ function RoomBettingConsoleComponent({ roomId, market, marketLoading, marketStal
   const setStake = useGameUiStore((state) => state.setStake);
   const [confirmedBet, setConfirmedBet] = useState<ConfirmedBet | null>(null);
   const [betResult, setBetResult] = useState<BetResult | null>(null);
+  const ethUsdPrice = useEthUsdPrice();
   const publicClient = usePublicClient({ chainId: arbitrumSepolia.id });
   const selectedBet = BET_TYPES.find((type) => type.id === selectedType) ?? BET_TYPES[0];
   const claimEstimate = estimatedClaim(market, selectedType, ethAmount);
@@ -159,7 +161,7 @@ function RoomBettingConsoleComponent({ roomId, market, marketLoading, marketStal
     {(market?.phase === 'proposed' || market?.phase === 'challenged') && <ChallengeTimeline />}
     <p className="ticket-fineprint"><ShieldCheck /> Settlement secured on {GAME_CONFIG.NETWORK.NAME}</p>
   </aside>
-  {displayedResult && <BetResultDialog state={displayedResult.state} finalCount={displayedResult.finalCount} settled={displayedResult.settled} totalReturn={confirmedBet?.totalReturn} stake={confirmedBet?.stake} onContinue={handleContinue} />}
+  {displayedResult && <BetResultDialog state={displayedResult.state} finalCount={displayedResult.finalCount} settled={displayedResult.settled} totalReturn={confirmedBet?.totalReturn} stake={confirmedBet?.stake} ethUsdPrice={ethUsdPrice} onContinue={handleContinue} />}
   </>;
 }
 

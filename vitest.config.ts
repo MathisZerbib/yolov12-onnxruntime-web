@@ -20,6 +20,8 @@ export default defineConfig({
         'src/components/transaction-status.tsx',
         'src/config/detection-zone.ts',
         'src/lib/round-availability.ts',
+        'src/lib/eth-usd.ts',
+        'src/lib/player-position.ts',
         'src/lib/traffic-counter.ts',
         'src/stores/game-ui-store.ts',
       ],

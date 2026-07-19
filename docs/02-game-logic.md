@@ -222,7 +222,7 @@ The `MarketScheduler` Durable Object handles continuous round creation:
 
 ```mermaid
 flowchart TD
-    Cron[Cron: every 2 min] --> MS[MarketScheduler DO]
+    Cron[Cloudflare Cron: every minute] --> MS[MarketScheduler DO]
     MS --> Check{Current market<br/>closed or resolved?}
     Check -->|No| Wait[Schedule alarm]
     Check -->|Yes| Zone{zoneVersion > 0?}
@@ -237,24 +237,25 @@ flowchart TD
 - Room is in `AUTO_MARKET_ROOMS` list
 - On-chain zone is published for the room
 
-**Local testing:** Trigger manually with:
+**Local testing:** `npm run dev` starts scheduled reconciliation automatically. To invoke one additional event while it is running:
 ```bash
 curl "http://localhost:8787/cdn-cgi/handler/scheduled"
-# or
-./scripts/trigger-scheduler.sh
 ```
+
+The full development command starts the local scheduled-event simulator. In production, Cloudflare invokes the Worker's `scheduled()` handler from `wrangler.jsonc`; the shell helper is not deployed.
 
 ---
 
 ## Payout Model
 
-Pari-mutuel: winners split the pool proportionally to their stakes.
+Fixed-return: the contract reserves bankroll coverage when the position opens.
 
 ```
-winnerPayout = (userStake / winningOutcomePool) × (totalPool - protocolFee)
+winnerPayout = userStake × multiplierBps(winningOutcome) / 10,000
 ```
 
-- Protocol fee: `feeBps` (default 200 = 2%) taken from total pool
+- Current outcome multipliers are 1.5× / 1.75× / 2× / 3×
+- Protocol fee: `feeBps` (default 200 = 2%) applies only to available market surplus
 - If no winning bets exist, all stakes are refundable
 - Claims use pull-payment pattern (user calls `claim(marketId)`)
 
@@ -268,9 +269,10 @@ These contract functions exist but have **no frontend or automation**:
 |----------|------|--------|
 | `proposeResult(marketId, count, evidenceHash)` | ORACLE_ROLE | No UI, no manifest → oracle pipeline |
 | `challengeResult(marketId, evidenceHash)` | Any (bonded) | Static `ChallengeTimeline` decoration only |
-| `finalizeResult(marketId)` | Anyone | No automation after challenge window |
+| `finalizeResult(marketId)` | Anyone | Profile fallback for a user's mature proposed position; no background automation |
 | `resolveChallenge(marketId, upheld)` | DISPUTE_ROLE | No UI |
-| `claim(marketId)` | Winners | No claim UI |
+| `cancelExpired(marketId)` | Anyone | Profile recovery action for expired unresolved positions |
+| `claim(marketId)` | Winners/refunds | Implemented in the profile Winnings panel |
 
 See [04 — Implementation Roadmap](./04-implementation-roadmap.md) for the plan to wire these.
 

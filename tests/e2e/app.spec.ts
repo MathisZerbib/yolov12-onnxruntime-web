@@ -4,6 +4,11 @@ import { expect, test, type Page } from '@playwright/test';
 const roomKey = `0x${'1'.repeat(64)}`;
 
 async function mockExternalServices(page: Page) {
+  await page.route('https://api.coinbase.com/v2/prices/ETH-USD/spot', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ data: { amount: '3500.00', currency: 'USD' } }),
+  }));
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     const path = url.pathname.replace(/^\/api/, '');
@@ -96,4 +101,47 @@ test('home remains within the mobile viewport', async ({ page }) => {
   await expect(page.getByRole('heading', { name: /the street is the oracle/i })).toBeVisible();
   const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 1);
+});
+
+test('Tokyo room stacks cleanly on a mobile portrait viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/room/tokyo');
+  const heading = page.getByRole('heading', { name: /how many vehicles cross the zone/i });
+  await heading.scrollIntoViewIfNeeded();
+  await expect(heading).toBeVisible();
+
+  const layout = await page.evaluate(() => {
+    const stage = document.querySelector('.broadcast-stage')!.getBoundingClientRect();
+    const ticket = document.querySelector('.room-ticket')!.getBoundingClientRect();
+    return {
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+      stageWidth: stage.width,
+      stageBottom: stage.bottom + window.scrollY,
+      ticketTop: ticket.top + window.scrollY,
+    };
+  });
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+  expect(layout.stageWidth).toBeGreaterThan(360);
+  expect(layout.ticketTop).toBeGreaterThanOrEqual(layout.stageBottom - 1);
+});
+
+test('Tokyo room does not crush the video into two columns on a short phone', async ({ page }) => {
+  await page.setViewportSize({ width: 568, height: 320 });
+  await page.goto('/room/tokyo');
+  await expect(page.getByRole('heading', { name: /how many vehicles cross the zone/i })).toBeAttached();
+  const layout = await page.evaluate(() => {
+    const stage = document.querySelector('.broadcast-stage')!.getBoundingClientRect();
+    const ticket = document.querySelector('.room-ticket')!.getBoundingClientRect();
+    return {
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+      stageWidth: stage.width,
+      stageBottom: stage.bottom + window.scrollY,
+      ticketTop: ticket.top + window.scrollY,
+    };
+  });
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+  expect(layout.stageWidth).toBeGreaterThan(540);
+  expect(layout.ticketTop).toBeGreaterThanOrEqual(layout.stageBottom - 1);
 });

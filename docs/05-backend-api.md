@@ -379,7 +379,7 @@ Triggers the market scheduler (local dev simulation of cron).
 
 **Auth:** None (local only)
 
-Also triggered automatically every 2 minutes via `wrangler.jsonc` cron: `*/2 * * * *`
+Also triggered automatically every minute in production via the `wrangler.jsonc` Cron Trigger: `* * * * *`.
 
 ---
 
@@ -451,11 +451,8 @@ Common HTTP status codes:
 # Start worker only
 npm run dev:api
 
-# Trigger market scheduler manually
-curl http://localhost:8787/cdn-cgi/handler/scheduled
-
-# Auto-trigger every 2 minutes
-./scripts/trigger-scheduler.sh
+# Start the full local stack, including automatic scheduled-event simulation
+npm run dev
 
 # Apply D1 migrations
 npm run db:migrate:local

@@ -349,7 +349,9 @@ export class MarketScheduler extends DurableObject<Env> {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Contract capability check failed';
       console.warn(stringifyLogEvent({ event: 'market_scheduler_blocked', contractAddress: config.contractAddress, error: message }));
-      await this.ctx.storage.deleteAlarm();
+      // RPC and deployment faults must not disable the precise retry path.
+      // The Cron Trigger remains an independent watchdog.
+      await this.ctx.storage.setAlarm(Date.now() + RETRY_DELAY_MS);
       return { checked: 0, created: 0, skipped: 0, errors: 1 };
     }
     console.log(stringifyLogEvent({ event: 'contract_capabilities', hasRoomRegistry: contractCapabilities.hasRoomRegistry, supportsRollingMarkets: contractCapabilities.supportsRollingMarkets }));

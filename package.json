@@ -8,14 +8,16 @@
     "tmp": "0.2.7"
   },
   "scripts": {
-    "dev": "concurrently --kill-others --names web,api \"vite\" \"wrangler dev --port 8787\"",
+    "dev": "concurrently --kill-others --names web,api,scheduler \"npm run dev:web\" \"npm run dev:api\" \"npm run dev:scheduler\"",
     "dev:web": "vite",
-    "dev:api": "wrangler dev --port 8787",
+    "dev:api": "wrangler dev --port 8787 --test-scheduled",
+    "dev:scheduler": "bash ./scripts/trigger-scheduler.sh",
     "db:migrate:local": "wrangler d1 migrations apply crossflow-auth --local",
     "worker:check": "wrangler deploy --dry-run --outdir /tmp/crossflow-worker",
     "worker:types": "wrangler types worker-configuration.d.ts --include-runtime false",
     "worker:types:check": "wrangler types worker-configuration.d.ts --include-runtime false --check",
     "worker:typecheck": "tsc -p tsconfig.worker.json",
+    "worker:schedule:verify": "node scripts/verify-worker-schedule.mjs",
     "contract:compile": "solcjs --base-path . --include-path node_modules --optimize --bin --abi contracts/TrafficPredictionMarket.sol -o /tmp/crossflow-solc",
     "contract:artifact": "node scripts/build-contract-artifact.mjs",
     "contract:test": "hardhat test solidity",

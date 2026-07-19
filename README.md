@@ -118,7 +118,7 @@ The fixed platform admin is `0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e`. After 
 
 After deployment, set `VITE_MARKET_CONTRACT_ADDRESS` for the frontend and set the same address as the Worker's `MARKET_CONTRACT_ADDRESS`. Markets are discovered per room on-chain; there is no build-time active-market ID to rotate.
 
-Continuous rounds use one `MarketScheduler` Durable Object keyed by the MARKET_ROLE account. This is intentional: a shared EOA nonce is the coordination boundary, so creation transactions for different rooms are serialized while public round reads remain stateless and horizontally scalable. Durable Object alarms create the next market when the current betting window locks, and a two-minute Cron Trigger acts as a recovery watchdog.
+Continuous rounds use one `MarketScheduler` Durable Object keyed by the MARKET_ROLE account. This is intentional: a shared EOA nonce is the coordination boundary, so creation transactions for different rooms are serialized while public round reads remain stateless and horizontally scalable. Durable Object alarms create the next market when the current betting window locks, and a one-minute Cloudflare Cron Trigger acts as a recovery watchdog. `npm run dev` starts the local scheduled-event simulator automatically; `scripts/trigger-scheduler.sh` is an internal local helper and is never required by a deployed Worker.
 
 Start with Tokyo only (`AUTO_MARKET_ROOMS=tokyo`). After deploying the replacement contract, configure the testnet operator secret:
 
@@ -130,7 +130,11 @@ For local development, copy `.dev.vars.example` to `.dev.vars` and insert the MA
 
 Result proposal remains deliberately separate from market creation. Browser inference manifests are not yet sufficient to trigger an ORACLE_ROLE signature because source authenticity and round-bound evidence still require a stronger attestation boundary. A passing local suite is a release gate, not a substitute for an independent audit; do not describe the contract as “bulletproof” or deploy it to mainnet without one.
 
-The app currently identifies `0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139` as its Arbitrum Sepolia contract. The admin dashboard reports it as a legacy rectangle-zone deployment; four-corner trapezoid publication requires deploying the regenerated artifact and then setting `VITE_MARKET_CONTRACT_ADDRESS` to that new address.
+A production Worker deployment installs the Cron Trigger from `wrangler.jsonc`; no laptop, open terminal, browser session, or shell loop keeps it alive. The Worker release workflow verifies the live trigger through Cloudflare's schedules API and fails the deployment if it is absent.
+
+The profile Winnings panel lists every position instead of only finalized payouts. It identifies open, awaiting-result, challenged, lost, claimed, and claimable positions. If an unresolved market passes its on-chain resolution deadline, the player can invoke the permissionless `cancelExpired` recovery and then claim the returned stake. A local detector match is labeled as settlement-pending and is not presented as already claimable.
+
+The source fallback remains `0xDe5D11Af502eA4E11c8eA02F2ff22cd6a41b0139`, but every real frontend release must provide `VITE_MARKET_CONTRACT_ADDRESS`; the Worker must use the same address. The checked-in development Worker configuration currently targets `0x500e7b71294ed4c79dc7c4cdae8e14f233c165a0`.
 
 Use the Arbiscan/Etherscan API key only after deployment for source verification on chain `421614`. It is intentionally excluded from the browser bundle and source control.
 

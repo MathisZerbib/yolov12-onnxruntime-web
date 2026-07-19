@@ -19,7 +19,7 @@
     "MARKET_FEE_BPS": "200"
   },
   "secrets": { "required": ["MARKET_OPERATOR_PRIVATE_KEY"] },
-  "triggers": { "crons": ["*/2 * * * *"] },
+  "triggers": { "crons": ["* * * * *"] },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "crossflow-auth",

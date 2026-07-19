@@ -137,7 +137,7 @@ There is **no global store** (no Redux, Zustand, or similar). State is managed t
 
 **MarketScheduler** (keyed by MARKET_ROLE EOA address):
 - Serializes `createMarket` transactions (shared EOA nonce is the coordination boundary)
-- Cron trigger every 2 minutes as recovery watchdog
+- Cloudflare Cron Trigger every minute as a production recovery watchdog
 - Creates next market when current round is closed/resolved
 - Requires on-chain zone published (`zoneVersion > 0`) before creating markets
 

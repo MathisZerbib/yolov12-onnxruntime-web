@@ -9,14 +9,17 @@ describe('BetResultDialog', () => {
     render(
       <MemoryRouter>
         <aside data-testid="ticket">
-          <BetResultDialog state="loss" finalCount={4} settled={false} onContinue={onContinue} />
+          <BetResultDialog state="loss" finalCount={4} settled={false} stake="0.001" ethUsdPrice={3500} onContinue={onContinue} />
         </aside>
       </MemoryRouter>,
     );
 
     const dialog = await screen.findByRole('alertdialog');
     expect(dialog).toHaveTextContent('YOU LOST');
+    expect(dialog).toHaveTextContent('Local result · settlement pending');
     expect(dialog).toHaveTextContent('Final count: 4');
+    expect(dialog).toHaveTextContent('0.001 ETH');
+    expect(dialog).toHaveTextContent('≈ $3.50 USD');
     expect(within(screen.getByTestId('ticket')).queryByRole('alertdialog')).not.toBeInTheDocument();
 
     const continueButton = screen.getByRole('button', { name: 'Continue' });
@@ -28,12 +31,13 @@ describe('BetResultDialog', () => {
   it('shows a claim action for a settled win', async () => {
     render(
       <MemoryRouter>
-        <BetResultDialog state="win" finalCount={20} settled totalReturn="0.2400" onContinue={() => undefined} />
+        <BetResultDialog state="win" finalCount={20} settled totalReturn="0.2400" ethUsdPrice={3500} onContinue={() => undefined} />
       </MemoryRouter>,
     );
 
     expect(await screen.findByText('YOU WIN')).toBeVisible();
     expect(screen.getByText('0.2400 ETH is ready to claim')).toBeVisible();
+    expect(screen.getByText('≈ $840.00 USD')).toBeVisible();
     expect(screen.getByRole('link', { name: 'Claim funds' })).toHaveAttribute('href', '/profile');
   });
 });

@@ -385,8 +385,11 @@ export default {
       return json({ error: 'Request failed' }, 500, cors);
     }
   },
-  async scheduled(_controller, env, ctx): Promise<void> {
+  async scheduled(controller, env): Promise<void> {
+    console.log(JSON.stringify({ event: 'market_scheduler_cron_start', cron: controller.cron, scheduledTime: controller.scheduledTime }));
     const scheduler = env.MARKET_SCHEDULER.getByName('market-operator');
-    ctx.waitUntil(scheduler.reconcile());
+    const result = await scheduler.reconcile();
+    console.log(JSON.stringify({ event: 'market_scheduler_cron_end', ...result }));
+    if (result.errors > 0) throw new Error(`Market scheduler failed for ${result.errors} room(s)`);
   },
 } satisfies ExportedHandler<Env>;

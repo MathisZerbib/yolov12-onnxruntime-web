@@ -2,34 +2,20 @@
 
 ## Quick Start
 
-1. **Start the frontend:**
+1. **Start the complete local stack:**
    ```bash
    npm run dev
    ```
 
-2. **Start the Cloudflare worker (in another terminal):**
-   ```bash
-   npx wrangler dev
-   ```
+   This starts Vite, Wrangler with scheduled-event testing enabled, and the local scheduler simulator. Do not run `trigger-scheduler.sh` separately.
 
-3. **Update types (if needed):**
+2. **Update types (if needed):**
    ```bash
    npx wrangler types
    ```
 
-4. **Trigger the market scheduler manually:**
-   ```bash
-   curl "http://localhost:8787/cdn-cgi/handler/scheduled"
-   ```
-   
-   Or run the helper script to auto-trigger every 2 minutes:
-   ```bash
-   ./scripts/trigger-scheduler.sh
-   ```
-
-5. **Configure your admin wallet:**
-   - Set `PLATFORM_ADMIN_ADDRESS` in `.env.development.local`
-   - Connect that wallet in the browser
+3. **Configure your admin wallet:**
+   - Connect the fixed platform-admin wallet shown in the Admin page
    - Navigate to `/admin` to verify admin access
 
 ## Current Configuration
@@ -72,8 +58,7 @@ After deploying, you need to provide the market operator private key for local d
 # Download the encrypted keystores from the deployment panel
 # Extract private keys using ethers.js or similar tool
 
-# Then create .dev.vars:
-echo "MARKET_OPERATOR_PRIVATE_KEY=your_key_without_0x" > .dev.vars
+# Then add MARKET_OPERATOR_PRIVATE_KEY to the ignored .dev.vars file.
 ```
 
 **Option B: Use a separate testnet wallet**

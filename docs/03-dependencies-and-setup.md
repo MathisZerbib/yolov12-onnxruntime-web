@@ -179,7 +179,8 @@ npm run dev
 
 This runs concurrently:
 - **Vite** on `http://localhost:5173`
-- **Wrangler** on `http://localhost:8787`
+- **Wrangler** on `http://localhost:8787` with the scheduled-event test endpoint
+- **Local scheduler simulator**, which waits for Wrangler and reconciles automatically
 
 Individual services:
 ```bash
@@ -196,7 +197,7 @@ Quick version:
 2. Go to `/admin/contracts` → generate role wallets → deploy
 3. Set `MARKET_OPERATOR_PRIVATE_KEY` to the market operator role key
 4. Go to `/admin/zones` → configure and publish zones on-chain
-5. Trigger market scheduler: `curl http://localhost:8787/cdn-cgi/handler/scheduled`
+5. Keep `npm run dev` running; it triggers the local scheduler automatically. A deployed Worker uses Cloudflare Cron and needs no local process.
 
 ---
 
@@ -205,6 +206,7 @@ Quick version:
 | Script | Command | Purpose |
 |--------|---------|---------|
 | `dev` | `npm run dev` | Full stack local development |
+| `dev:scheduler` | `npm run dev:scheduler` | Internal local Cron simulation (normally started by `dev`) |
 | `build` | `npm run build` | Production build → `dist/` |
 | `preview` | `npm run preview` | Preview production build (with COEP) |
 | `lint` | `npm run lint` | ESLint |
