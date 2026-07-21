@@ -1,6 +1,6 @@
 # Crossflow market contract
 
-`TrafficPredictionMarket.sol` is a bankroll-backed fixed-return ETH market. Total returns, including the original stake, are enforced on-chain at 1.5× UNDER, 1.75× RANGE, 2× OVER, and 3× EXACT. Every bet updates the worst-case liability across all open markets and reverts unless deposited liquidity covers payouts, fees, and challenge refunds. Oracle results are proposed, remain challengeable for 15 minutes with a fixed bond, and become claimable only after finalization.
+`TrafficPredictionMarket.sol` is a bankroll-backed fixed-return ETH market. Total returns, including the original stake, are enforced on-chain at 1.5× UNDER, 1.75× RANGE, 2× OVER, and 3× EXACT. Every bet updates the worst-case liability across all open markets and reverts unless deposited liquidity covers payouts, fees, and challenge refunds. Oracle results are proposed, remain challengeable for 1 minute with a fixed bond, and become claimable only after finalization.
 
 The platform admin is permanently pinned for detection-zone writes to `0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e`. Zones use integer basis points, have a monotonic version and canonical `keccak256(abi.encode(...))` hash, and are snapshotted when a market is created. Later zone edits cannot change an open market. Oracle and dispute-resolution calls must present that snapshot hash.
 

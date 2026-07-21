@@ -18,6 +18,7 @@ interface SummarizePlayerPositionInput {
   closeTime: number;
   resolveDeadline: number;
   challengeDeadline: number;
+  disputeDeadline: number;
   stakes: readonly [bigint, bigint, bigint, bigint];
   multiplierBps: readonly [bigint, bigint, bigint, bigint];
   claimed: boolean;
@@ -27,12 +28,40 @@ interface SummarizePlayerPositionInput {
 export interface PlayerPositionSummary {
   stake: bigint;
   payout: bigint;
+  profit: bigint;
   lifecycle: PlayerPositionLifecycle;
   action: PlayerPositionAction;
+  nextTransitionAt: number | null;
+}
+
+export const POSITION_REFRESH_INTERVAL_MS = 30_000;
+
+export function nextPositionRefreshDelayMs(
+  positions: readonly Pick<PlayerPositionSummary, 'lifecycle' | 'nextTransitionAt'>[],
+  nowMs: number,
+): number | null {
+  const unresolved = positions.filter((position) => [
+    'betting', 'awaiting_result', 'refund_recovery', 'proposed', 'finalizable', 'challenged',
+  ].includes(position.lifecycle));
+  if (unresolved.length === 0) return null;
+
+  const nextTransitionMs = unresolved.reduce<number | null>((earliest, position) => {
+    if (position.nextTransitionAt === null) return earliest;
+    const transitionMs = position.nextTransitionAt * 1_000;
+    return earliest === null ? transitionMs : Math.min(earliest, transitionMs);
+  }, null);
+  if (nextTransitionMs === null) return POSITION_REFRESH_INTERVAL_MS;
+  return Math.max(1_000, Math.min(POSITION_REFRESH_INTERVAL_MS, nextTransitionMs - nowMs));
 }
 
 export function orderedUniqueMarketIds(ids: readonly (bigint | undefined)[]): bigint[] {
   return [...new Set(ids.filter((id): id is bigint => id !== undefined))].sort((a, b) => a === b ? 0 : a > b ? -1 : 1);
+}
+
+export function claimableMarketIds(
+  positions: readonly { marketId: bigint; lifecycle: PlayerPositionLifecycle }[],
+): bigint[] {
+  return positions.filter((position) => position.lifecycle === 'claimable').map((position) => position.marketId);
 }
 
 export function summarizePlayerPosition(input: SummarizePlayerPositionInput): PlayerPositionSummary {
@@ -44,21 +73,33 @@ export function summarizePlayerPosition(input: SummarizePlayerPositionInput): Pl
     payout = input.stakes[index] * input.multiplierBps[index] / 10_000n;
   }
 
-  if (input.claimed && payout > 0n) return { stake, payout, lifecycle: 'claimed', action: null };
+  let profit = 0n;
+  if (input.status === 4) {
+    profit = payout - stake;
+  }
+
+  if (input.claimed && payout > 0n) return { stake, payout, profit, lifecycle: 'claimed', action: null, nextTransitionAt: null };
   if (input.status === 4) return payout > 0n
-    ? { stake, payout, lifecycle: 'claimable', action: 'claim' }
-    : { stake, payout, lifecycle: 'lost', action: null };
-  if (input.status === 5) return { stake, payout, lifecycle: 'claimable', action: 'claim' };
+    ? { stake, payout, profit, lifecycle: 'claimable', action: 'claim', nextTransitionAt: null }
+    : { stake, payout, profit, lifecycle: 'lost', action: null, nextTransitionAt: null };
+  if (input.status === 5) return { stake, payout, profit, lifecycle: 'claimable', action: 'claim', nextTransitionAt: null };
   if (input.status === 1) {
-    if (input.nowSeconds < input.closeTime) return { stake, payout, lifecycle: 'betting', action: null };
-    if (input.nowSeconds > input.resolveDeadline) return { stake, payout, lifecycle: 'refund_recovery', action: 'cancel_expired' };
-    return { stake, payout, lifecycle: 'awaiting_result', action: null };
+    if (input.nowSeconds < input.closeTime) return { stake, payout, profit, lifecycle: 'betting', action: null, nextTransitionAt: input.closeTime };
+    if (input.nowSeconds > input.resolveDeadline) return { stake, payout, profit, lifecycle: 'refund_recovery', action: 'cancel_expired', nextTransitionAt: null };
+    return { stake, payout, profit, lifecycle: 'awaiting_result', action: null, nextTransitionAt: input.resolveDeadline + 1 };
   }
   if (input.status === 2) return input.nowSeconds > input.challengeDeadline
-    ? { stake, payout, lifecycle: 'finalizable', action: 'finalize' }
-    : { stake, payout, lifecycle: 'proposed', action: null };
-  if (input.status === 3) return { stake, payout, lifecycle: 'challenged', action: null };
-  return { stake, payout, lifecycle: 'unknown', action: null };
+    ? { stake, payout, profit, lifecycle: 'finalizable', action: 'finalize', nextTransitionAt: null }
+    : { stake, payout, profit, lifecycle: 'proposed', action: null, nextTransitionAt: input.challengeDeadline + 1 };
+  if (input.status === 3) return {
+    stake,
+    payout,
+    profit,
+    lifecycle: 'challenged',
+    action: null,
+    nextTransitionAt: input.disputeDeadline > input.nowSeconds ? input.disputeDeadline + 1 : null,
+  };
+  return { stake, payout, profit, lifecycle: 'unknown', action: null, nextTransitionAt: null };
 }
 
 export function playerPositionLabel(lifecycle: PlayerPositionLifecycle, finalCount: number, marketStatus?: number): string {

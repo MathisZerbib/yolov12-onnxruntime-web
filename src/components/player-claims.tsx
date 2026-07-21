@@ -1,19 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, Coins, Loader2, RefreshCw, RotateCcw, ShieldAlert, Timer, WalletCards } from 'lucide-react';
-import { formatEther, parseAbiItem } from 'viem';
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import { arbitrumSepolia } from 'wagmi/chains';
-import { marketContractAddress, trafficMarketAbi } from '@/lib/market-contract';
 import { TransactionStatus, type TransactionState } from '@/components/transaction-status';
+import { formatEthUsd } from '@/lib/eth-usd';
+import { marketContractAddress, trafficMarketAbi } from '@/lib/market-contract';
 import {
-  playerPositionLabel,
+  claimableMarketIds,
+  nextPositionRefreshDelayMs,
   orderedUniqueMarketIds,
+  playerPositionLabel,
   summarizePlayerPosition,
   type PlayerPositionAction,
   type PlayerPositionLifecycle,
 } from '@/lib/player-position';
-import { formatEthUsd } from '@/lib/eth-usd';
 import { useEthUsdPrice } from '@/lib/use-eth-usd-price';
+import { CheckCircle2, Coins, Loader2, RefreshCw, RotateCcw, ShieldAlert, Timer, WalletCards } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { formatEther, parseAbiItem } from 'viem';
+import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
+import { arbitrumSepolia } from 'wagmi/chains';
 
 const POSITION_OPENED_EVENT = parseAbiItem('event PositionOpened(uint256 indexed marketId, address indexed account, uint8 indexed outcome, uint256 amount)');
 
@@ -23,8 +25,10 @@ interface PlayerPosition {
   finalCount: number;
   stake: bigint;
   payout: bigint;
+  profit: bigint;
   lifecycle: PlayerPositionLifecycle;
   action: PlayerPositionAction;
+  nextTransitionAt: number | null;
 }
 
 function displayEth(value: bigint): string {
@@ -58,6 +62,7 @@ export function PlayerClaims() {
   const [positions, setPositions] = useState<PlayerPosition[]>([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState<{ marketId: bigint; action: PlayerPositionAction } | null>(null);
+  const [claimingAll, setClaimingAll] = useState(false);
   const [hash, setHash] = useState<`0x${string}`>();
   const [txState, setTxState] = useState<TransactionState>();
   const [confirmedText, setConfirmedText] = useState('Winnings sent to your wallet.');
@@ -94,6 +99,7 @@ export function PlayerClaims() {
             closeTime: bigint;
             resolveDeadline: bigint;
             challengeDeadline: bigint;
+            disputeDeadline: bigint;
           };
           const stakes = [under, range, over, exact] as [bigint, bigint, bigint, bigint];
           const summary = summarizePlayerPosition({
@@ -102,6 +108,7 @@ export function PlayerClaims() {
             closeTime: Number(data.closeTime),
             resolveDeadline: Number(data.resolveDeadline),
             challengeDeadline: Number(data.challengeDeadline),
+            disputeDeadline: Number(data.disputeDeadline),
             stakes,
             multiplierBps,
             claimed: alreadyClaimed,
@@ -122,6 +129,14 @@ export function PlayerClaims() {
     setTxState(undefined);
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!address || !publicClient || loading) return;
+    const delay = nextPositionRefreshDelayMs(positions, Date.now());
+    if (delay === null) return;
+    const timeout = window.setTimeout(() => { void refresh(); }, delay);
+    return () => window.clearTimeout(timeout);
+  }, [address, loading, positions, publicClient, refresh]);
 
   async function submit(position: PlayerPosition) {
     if (!publicClient || !address || !position.action) return;
@@ -156,15 +171,107 @@ export function PlayerClaims() {
     } finally { setSubmitting(null); }
   }
 
+  async function claimAll() {
+    if (!publicClient || !address) return;
+    const candidates = claimableMarketIds(positions);
+    console.log('[PlayerClaims] claimAll called', { candidates: candidates.map(String), wallet: address });
+    if (candidates.length === 0) {
+      console.warn('[PlayerClaims] claimAll aborted — zero candidates from frontend state');
+      return;
+    }
+    setClaimingAll(true);
+    setError('');
+    setHash(undefined);
+    setTxState('AWAITING_SIGNATURE');
+    try {
+      // Re-verify every market on-chain before the batch — if any single market is not
+      // claimable (already claimed, wrong status, zero stake) the entire batch reverts.
+      const verified: bigint[] = [];
+      for (const marketId of candidates) {
+        const [market, alreadyClaimed] = await Promise.all([
+          publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'getMarket', args: [marketId] }),
+          publicClient.readContract({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'claimed', args: [marketId, address] }),
+        ]);
+        const data = market as { status: number };
+        const wasClaimed = alreadyClaimed as boolean;
+        console.log(`[PlayerClaims] market #${marketId} on-chain check → status=${data.status} (need 4|5), claimed=${wasClaimed}`);
+        if (data.status !== 4 && data.status !== 5) {
+          console.warn(`[PlayerClaims] market #${marketId} SKIPPED — status is ${data.status}, not Resolved(4) nor Cancelled(5)`);
+          continue;
+        }
+        if (wasClaimed) {
+          console.warn(`[PlayerClaims] market #${marketId} SKIPPED — already claimed on-chain`);
+          continue;
+        }
+        verified.push(marketId);
+        console.log(`[PlayerClaims] market #${marketId} VERIFIED — ready for batch claim`);
+      }
+      console.log(`[PlayerClaims] verification complete — ${verified.length}/${candidates.length} markets will be sent`, { verified: verified.map(String) });
+      if (verified.length === 0) {
+        setError('No claimable positions left — the list may be stale. Refresh and retry.');
+        setTxState('FAILED');
+        setClaimingAll(false);
+        return;
+      }
+      console.log('[PlayerClaims] simulating claimAll on-chain...', { batch: verified.map(String) });
+      await publicClient.simulateContract({ account: address, address: marketContractAddress, abi: trafficMarketAbi, functionName: 'claimAll', args: [verified] });
+      console.log('[PlayerClaims] simulation passed — requesting wallet signature');
+      const transactionHash = await writeContractAsync({ address: marketContractAddress, abi: trafficMarketAbi, functionName: 'claimAll', args: [verified], chainId: arbitrumSepolia.id });
+      console.log('[PlayerClaims] transaction sent', { tx: transactionHash });
+      setHash(transactionHash);
+      setTxState('PENDING');
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: transactionHash, confirmations: 1 });
+      console.log('[PlayerClaims] receipt received', { status: receipt.status, gasUsed: receipt.gasUsed?.toString() });
+      setTxState(receipt.status === 'success' ? 'CONFIRMED' : 'FAILED');
+      if (receipt.status === 'success') {
+        setConfirmedText(`${verified.length} ${verified.length === 1 ? 'claim was' : 'claims were'} paid directly to your wallet.`);
+        await refresh();
+      }
+    } catch (cause) {
+      console.error('[PlayerClaims] claimAll failed:', cause);
+      setTxState('FAILED');
+      setError(cause instanceof Error && cause.message.toLowerCase().includes('user rejected')
+        ? 'Claim all was cancelled in the wallet.'
+        : 'Claim all could not be completed. Refresh the positions and retry.');
+    } finally {
+      setClaimingAll(false);
+    }
+  }
+
   if (!isConnected) return <section className="player-claims"><header><WalletCards /><div><h2>Winnings</h2><p>Connect your wallet to find every on-chain position.</p></div></header></section>;
 
+  const totalNetProfit = positions.filter((p) => ['claimable', 'claimed', 'lost'].includes(p.lifecycle)).reduce((sum, p) => sum + p.profit, 0n);
+  const netProfitAbs = totalNetProfit < 0n ? -totalNetProfit : totalNetProfit;
+  const netProfitDisplay = `${totalNetProfit < 0n ? '-' : totalNetProfit > 0n ? '+' : ''}${displayEth(netProfitAbs)} ETH`;
+  const netProfitClass = totalNetProfit > 0n ? 'net-profit-win' : totalNetProfit < 0n ? 'net-profit-loss' : 'net-profit-refund';
+  const netProfitEth = formatEther(totalNetProfit);
+  const netProfitUsd = typeof ethUsdPrice === 'number' ? formatEthUsd(netProfitEth.startsWith('-') ? netProfitEth.slice(1) : netProfitEth, ethUsdPrice) : null;
+
   const available = positions.filter((position) => position.lifecycle === 'claimable').reduce((sum, position) => sum + position.payout, 0n);
+  const claimableCount = claimableMarketIds(positions).length;
   const availableEth = formatEther(available);
   const availableUsd = typeof ethUsdPrice === 'number' ? formatEthUsd(availableEth, ethUsdPrice) : null;
   const unresolved = positions.filter((position) => ['betting', 'awaiting_result', 'refund_recovery', 'proposed', 'finalizable', 'challenged'].includes(position.lifecycle)).length;
 
   return <section className="player-claims">
-    <header><Coins /><div><h2>Winnings</h2><p>Finalized payouts and expired-round refunds are paid directly by the contract.</p><button className="claims-refresh" disabled={loading} onClick={() => void refresh()}><RefreshCw className={loading ? 'is-spinning' : ''} /> Refresh positions</button></div><strong><span>{displayEth(available)} ETH claimable</span><small>{availableUsd ? `≈ ${availableUsd} USD` : unresolved > 0 ? `${unresolved} position${unresolved === 1 ? '' : 's'} pending` : 'No pending settlement'}</small></strong></header>
+    <div className="winnings-dashboard">
+      <div className="dashboard-metrics">
+        <div className="metric-box">
+          <span>Total Winnings (Net)</span>
+          <strong className={netProfitClass}>{netProfitDisplay}</strong>
+          <small>{netProfitUsd ? `≈ ${totalNetProfit < 0n ? '-' : ''}${netProfitUsd} USD` : 'Updating USD value…'}</small>
+        </div>
+        <div className="metric-box">
+          <span>Withdrawable Balance</span>
+          <strong className="withdrawable-balance-val">{displayEth(available)} ETH</strong>
+          <small>{availableUsd ? `≈ ${availableUsd} USD` : unresolved > 0 ? `${unresolved} position${unresolved === 1 ? '' : 's'} pending` : 'No pending settlement'}</small>
+        </div>
+      </div>
+      <div className="dashboard-actions">
+        <button className="claims-refresh" disabled={loading || claimingAll} onClick={() => void refresh()}><RefreshCw className={loading ? 'is-spinning' : ''} /> Refresh positions</button>
+        <button className="withdraw-primary-btn" disabled={loading || claimingAll || claimableCount === 0 || submitting !== null} onClick={() => void claimAll()}><Coins /> {claimingAll ? 'Withdrawing…' : `Withdraw (${claimableCount})`}</button>
+      </div>
+    </div>
     {chainId !== arbitrumSepolia.id
       ? <p className="claims-empty">Switch to Arbitrum Sepolia to manage these positions.</p>
       : loading && positions.length === 0
@@ -173,10 +280,39 @@ export function PlayerClaims() {
           ? <p className="claims-empty">No on-chain positions were found for this wallet.</p>
           : <div className="claims-list">{positions.map((position) => <article key={position.marketId.toString()} data-state={position.lifecycle}>
             <span>{position.lifecycle === 'claimed' ? <CheckCircle2 /> : position.lifecycle === 'refund_recovery' ? <RotateCcw /> : position.lifecycle === 'lost' ? <ShieldAlert /> : position.lifecycle === 'claimable' ? <Coins /> : <Timer />}<span><b>Round #{position.marketId.toString()}</b><small>{playerPositionLabel(position.lifecycle, position.finalCount, position.status)}</small></span></span>
-            <strong><span>{displayEth(position.payout > 0n ? position.payout : position.stake)} ETH</span><small>{position.payout > 0n ? 'payout' : 'stake'}</small></strong>
-            {position.action
+            <strong>
+              {position.lifecycle === 'claimable' || position.lifecycle === 'claimed' ? (
+                position.payout > position.stake ? (
+                  <>
+                    <span className="net-profit-win">+{displayEth(position.payout - position.stake)} ETH</span>
+                    <small className="gross-details">won (gross {displayEth(position.payout)})</small>
+                  </>
+                ) : position.payout === position.stake ? (
+                  <>
+                    <span className="net-profit-refund">0.00 ETH</span>
+                    <small className="gross-details">refund (gross {displayEth(position.payout)})</small>
+                  </>
+                ) : (
+                  <>
+                    <span className="net-profit-loss">-{displayEth(position.stake - position.payout)} ETH</span>
+                    <small className="gross-details">loss (gross {displayEth(position.payout)})</small>
+                  </>
+                )
+              ) : position.lifecycle === 'lost' ? (
+                <>
+                  <span className="net-profit-loss">-{displayEth(position.stake)} ETH</span>
+                  <small>lost</small>
+                </>
+              ) : (
+                <>
+                  <span>{displayEth(position.stake)} ETH</span>
+                  <small>stake at risk</small>
+                </>
+              )}
+            </strong>
+            {position.action && position.action !== 'claim'
               ? <button disabled={submitting !== null} onClick={() => void submit(position)}>{submitting?.marketId === position.marketId ? 'Confirming…' : lifecycleActionLabel(position.action)}</button>
-              : <i className={`claim-state ${position.lifecycle}`}>{lifecycleStateLabel(position.lifecycle)}</i>}
+              : <i className={`claim-state ${position.lifecycle === 'claimable' ? 'claimable' : position.lifecycle}`}>{position.lifecycle === 'claimable' ? 'Ready to withdraw' : lifecycleStateLabel(position.lifecycle)}</i>}
           </article>)}</div>}
     {txState && <TransactionStatus state={txState} hash={hash} confirmedText={confirmedText} />}
     {error && <p className="contract-error" role="alert">Position scan: {error}</p>}

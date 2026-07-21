@@ -95,7 +95,7 @@ stateDiagram-v2
 |--------|----------|---------|
 | Betting | Configurable (default 5 min) | `closeTime` in `createMarket` |
 | Resolution | Configurable (default 10 min) | `resolveDeadline` in `createMarket` |
-| Challenge | 15 minutes | After `proposeResult` |
+| Challenge | 1 minute | After `proposeResult` |
 | Dispute resolution | 7 days | After challenge |
 | Admin transfer | 2 days | `transferAdmin` |
 

@@ -63,6 +63,7 @@
     "@cloudflare/workers-types": "^5.20260719.1",
     "@eslint/js": "^9.39.4",
     "@openzeppelin/contracts": "^5.6.1",
+    "@openzeppelin/contracts-upgradeable": "^5.6.1",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",

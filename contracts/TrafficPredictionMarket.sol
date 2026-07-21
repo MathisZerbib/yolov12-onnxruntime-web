@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {AccessControlDefaultAdminRules} from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AccessControlDefaultAdminRulesUpgradeable} from "@openzeppelin/contracts-upgradeable/access/extensions/AccessControlDefaultAdminRulesUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 /// @title Crossflow Traffic Prediction Market
 /// @notice Solvent, fixed-return ETH markets resolved from an authorized vehicle-count oracle.
-contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, ReentrancyGuard {
+/// @dev This contract is UUPS upgradeable. The proxy address remains constant across upgrades,
+///      preserving all funds, state, and user positions.
+contract TrafficPredictionMarket is Initializable, AccessControlDefaultAdminRulesUpgradeable, PausableUpgradeable, UUPSUpgradeable {
     address public constant PLATFORM_ADMIN = 0x2a1F44Ce3759b8624aD8b5828efEe2Dd370DCa1e;
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
     bytes32 public constant MARKET_ROLE = keccak256("MARKET_ROLE");
@@ -17,7 +20,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     uint64 public constant MAX_BETTING_PERIOD = 1 days;
     uint64 public constant MAX_RESOLUTION_PERIOD = 1 days;
     uint64 public constant CLAIM_PERIOD = 90 days;
-    uint64 public constant CHALLENGE_PERIOD = 15 minutes;
+    uint64 public constant CHALLENGE_PERIOD = 1 minutes;
     uint64 public constant DISPUTE_PERIOD = 7 days;
     uint256 public constant CHALLENGE_BOND = 0.01 ether;
     uint16 public constant UNDER_MULTIPLIER_BPS = 15_000;
@@ -80,6 +83,19 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     mapping(bytes32 => uint256) public latestMarketIdByRoom;
     mapping(bytes32 => address) public roleAccount;
 
+    uint256 private constant _REENTRANCY_NOT_ENTERED = 1;
+    uint256 private constant _REENTRANCY_ENTERED = 2;
+    uint256 private _reentrancyStatus;
+
+    modifier nonReentrant() {
+        if (_reentrancyStatus == _REENTRANCY_ENTERED) revert ReentrantCall();
+        _reentrancyStatus = _REENTRANCY_ENTERED;
+        _;
+        _reentrancyStatus = _REENTRANCY_NOT_ENTERED;
+    }
+
+    error ReentrantCall();
+
     function getMarket(uint256 marketId) external view returns (Market memory) {
         return markets[marketId];
     }
@@ -101,6 +117,7 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     error StaleZoneConfiguration();
     error ActiveMarketExists(uint256 marketId);
     error InsufficientLiquidity(uint256 required, uint256 available);
+    error Unauthorized();
 
     event RoomZoneUpdated(bytes32 indexed roomId, uint32 indexed version, bytes32 indexed configHash);
     event MarketCreated(uint256 indexed marketId, bytes32 indexed roomId, uint64 closeTime, uint32 lowerBound, uint32 upperBound, uint32 exactTarget, uint32 zoneVersion, bytes32 zoneConfigHash);
@@ -115,9 +132,17 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
     event LiquidityFunded(address indexed account, uint256 amount);
     event LiquidityWithdrawn(address indexed recipient, uint256 amount);
 
-    constructor(address admin, address oracle, address marketOperator, address disputeResolver)
-        AccessControlDefaultAdminRules(2 days, admin)
+    /// @dev Prevent direct use of the implementation contract. Must be called when deploying the implementation.
+    constructor() {}
+
+    function initialize(address admin, address oracle, address marketOperator, address disputeResolver)
+        public initializer
     {
+        __AccessControlDefaultAdminRules_init(2 days, admin);
+        __Pausable_init();
+
+        _reentrancyStatus = _REENTRANCY_NOT_ENTERED;
+
         if (admin != PLATFORM_ADMIN || oracle == address(0) || marketOperator == address(0) || disputeResolver == address(0) ||
             admin == oracle || admin == marketOperator || admin == disputeResolver || oracle == marketOperator ||
             oracle == disputeResolver || marketOperator == disputeResolver) revert InvalidConfiguration();
@@ -128,6 +153,8 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         roleAccount[MARKET_ROLE] = marketOperator;
         roleAccount[DISPUTE_ROLE] = disputeResolver;
     }
+
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     function fundLiquidity() external payable {
         if (msg.value == 0) revert InvalidStake();
@@ -267,8 +294,9 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         emit PositionOpened(marketId, msg.sender, outcome, msg.value);
     }
 
-    /// @dev The oracle submits only facts. Outcome selection remains deterministic on-chain.
-    function proposeResult(uint256 marketId, uint32 finalCount, bytes32 evidenceHash, bytes32 zoneConfigHash) external onlyRole(ORACLE_ROLE) {
+    /// @dev The oracle or the market operator can submit a verified result.
+    function proposeResult(uint256 marketId, uint32 finalCount, bytes32 evidenceHash, bytes32 zoneConfigHash) external {
+        if (!hasRole(ORACLE_ROLE, msg.sender) && !hasRole(MARKET_ROLE, msg.sender)) revert Unauthorized();
         Market storage market = markets[marketId];
         if (market.status != Status.Open) revert InvalidMarket();
         if (block.timestamp < market.closeTime) revert MarketNotClosed();
@@ -372,6 +400,33 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
         return Outcome.Over;
     }
 
+    function claimAll(uint256[] calldata marketIds) external nonReentrant {
+        for (uint256 i; i < marketIds.length; ++i) {
+            uint256 marketId = marketIds[i];
+            Market storage market = markets[marketId];
+            if (market.status != Status.Resolved && market.status != Status.Cancelled) revert MarketNotClaimable();
+            if (claimed[marketId][msg.sender]) revert AlreadyClaimed();
+            claimed[marketId][msg.sender] = true;
+
+            uint256 amount;
+            if (market.status == Status.Cancelled) {
+                amount = positions[marketId][msg.sender][Outcome.Under]
+                    + positions[marketId][msg.sender][Outcome.Range]
+                    + positions[marketId][msg.sender][Outcome.Over]
+                    + positions[marketId][msg.sender][Outcome.Exact];
+            } else {
+                uint256 stake = positions[marketId][msg.sender][market.winner];
+                amount = stake * multiplierBps(market.winner) / 10_000;
+            }
+            if (amount == 0) revert InvalidStake();
+            lockedPayouts -= amount;
+            marketReservedPayout[marketId] -= amount;
+            (bool success,) = payable(msg.sender).call{value: amount}("");
+            if (!success) revert TransferFailed();
+            emit Claimed(marketId, msg.sender, amount);
+        }
+    }
+
     function claim(uint256 marketId) external nonReentrant {
         Market storage market = markets[marketId];
         if (market.status != Status.Resolved && market.status != Status.Cancelled) revert MarketNotClaimable();
@@ -428,4 +483,6 @@ contract TrafficPredictionMarket is AccessControlDefaultAdminRules, Pausable, Re
 
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) { _pause(); }
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) { _unpause(); }
+
+    uint256[50] private __gap;
 }

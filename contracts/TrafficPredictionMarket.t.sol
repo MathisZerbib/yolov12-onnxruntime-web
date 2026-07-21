@@ -24,7 +24,10 @@ contract TrafficPredictionMarketTest {
     TrafficPredictionMarket private market;
 
     function setUp() public {
-        market = new TrafficPredictionMarket(ADMIN, ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER);
+        market = new TrafficPredictionMarket();
+        vm.deal(ADMIN, 100 ether);
+        vm.prank(ADMIN);
+        market.initialize(ADMIN, ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER);
         vm.deal(ADMIN, 100 ether);
         vm.prank(ADMIN);
         market.fundLiquidity{value: 100 ether}();
@@ -32,10 +35,10 @@ contract TrafficPredictionMarketTest {
 
     function testConstructorPinsPlatformAdmin() public {
         require(market.PLATFORM_ADMIN() == ADMIN, "admin is not pinned");
-        try new TrafficPredictionMarket(address(0x9999), ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER) {
+        try new TrafficPredictionMarket().initialize(address(0x9999), ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER) {
             revert("different admin accepted");
         } catch {}
-        try new TrafficPredictionMarket(ADMIN, ORACLE, ORACLE, DISPUTE_RESOLVER) {
+        try new TrafficPredictionMarket().initialize(ADMIN, ORACLE, ORACLE, DISPUTE_RESOLVER) {
             revert("overlapping roles accepted");
         } catch {}
     }
@@ -239,7 +242,9 @@ contract TrafficPredictionMarketTest {
         market.claim(marketId);
         require(ALICE.balance - beforeClaim == 3 ether, "exact return is not guaranteed at 3x");
 
-        TrafficPredictionMarket emptyMarket = new TrafficPredictionMarket(ADMIN, ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER);
+        TrafficPredictionMarket emptyMarket = new TrafficPredictionMarket();
+        vm.prank(ADMIN);
+        emptyMarket.initialize(ADMIN, ORACLE, MARKET_OPERATOR, DISPUTE_RESOLVER);
         vm.prank(ADMIN);
         emptyMarket.setRoomZone(TOKYO, _geometry());
         vm.prank(MARKET_OPERATOR);

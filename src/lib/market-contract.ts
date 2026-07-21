@@ -38,12 +38,18 @@ export const trafficMarketAbi = [
   { type: 'function', name: 'bet', stateMutability: 'payable', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'outcome', type: 'uint8' }], outputs: [] },
   { type: 'function', name: 'positions', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'account', type: 'address' }, { name: 'outcome', type: 'uint8' }], outputs: [{ name: '', type: 'uint256' }] },
   { type: 'function', name: 'claimed', stateMutability: 'view', inputs: [{ name: 'marketId', type: 'uint256' }, { name: 'account', type: 'address' }], outputs: [{ name: '', type: 'bool' }] },
+  { type: 'function', name: 'claimAll', stateMutability: 'nonpayable', inputs: [{ name: 'marketIds', type: 'uint256[]' }], outputs: [] },
   { type: 'function', name: 'claim', stateMutability: 'nonpayable', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [] },
   { type: 'function', name: 'cancelExpired', stateMutability: 'nonpayable', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [] },
   { type: 'function', name: 'finalizeResult', stateMutability: 'nonpayable', inputs: [{ name: 'marketId', type: 'uint256' }], outputs: [] },
   { type: 'function', name: 'multiplierBps', stateMutability: 'pure', inputs: [{ name: 'outcome', type: 'uint8' }], outputs: [{ name: '', type: 'uint16' }] },
   { type: 'function', name: 'pause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
   { type: 'function', name: 'unpause', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'upgradeToAndCall', stateMutability: 'payable', inputs: [
+    { name: 'newImplementation', type: 'address' }, { name: 'data', type: 'bytes' }
+  ], outputs: [] },
+  { type: 'function', name: 'proxiableUUID', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'bytes32' }] },
+  { type: 'function', name: 'UPGRADE_INTERFACE_VERSION', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'string' }] },
   { type: 'function', name: 'rotateOperationalRole', stateMutability: 'nonpayable', inputs: [{ name: 'role', type: 'bytes32' }, { name: 'newAccount', type: 'address' }], outputs: [] },
   { type: 'function', name: 'rotateAllOperationalRoles', stateMutability: 'nonpayable', inputs: [{ name: 'oracle', type: 'address' }, { name: 'marketOperator', type: 'address' }, { name: 'disputeResolver', type: 'address' }], outputs: [] },
   { type: 'error', name: 'InvalidMarket', inputs: [] },

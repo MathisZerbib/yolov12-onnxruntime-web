@@ -29,9 +29,11 @@ export function BetResultDialog({ state, finalCount, settled, totalReturn, stake
   const detail = state === 'win'
     ? settled
       ? `${totalReturn ?? 'Your payout'} ETH is ready to claim`
-      : `Local count ${finalCount} matched · awaiting verified settlement`
+      : `Result on-chain · awaiting finalization`
     : state === 'loss'
-      ? `Final count: ${finalCount}`
+      ? settled
+        ? `Final count: ${finalCount}`
+        : `Result on-chain · awaiting finalization`
       : `${stake ?? 'Your stake'} ETH is ready to reclaim`;
   const resultAmount = state === 'win' ? totalReturn : stake;
   const amountLabel = state === 'win' ? settled ? 'Payout' : 'Potential payout' : state === 'loss' ? settled ? 'Stake lost' : 'Stake at risk' : 'Refund';
@@ -52,7 +54,7 @@ export function BetResultDialog({ state, finalCount, settled, totalReturn, stake
           {state === 'win' ? <Trophy /> : state === 'loss' ? <XCircle /> : <RotateCcw />}
         </span>
         <div className="bet-result-copy">
-          <span>{settled ? 'Finalized on-chain' : 'Local result · settlement pending'}</span>
+          <span>{settled ? 'Finalized on-chain' : 'Result proposed on-chain · finalizing'}</span>
           <DialogTitle className="bet-result-title">{title}</DialogTitle>
           <DialogDescription className="bet-result-detail">{detail}</DialogDescription>
         </div>

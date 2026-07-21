@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage, useSwitchChain } from 'wagmi';
-import { arbitrumSepolia } from 'wagmi/chains';
-import { Check, ChevronDown, CircleAlert, Copy, ExternalLink, Loader2, LockKeyhole, LogOut, RefreshCw, ShieldCheck, UserRound, Wallet, X } from 'lucide-react';
+import { isPlatformAdmin } from '@/config/detection-zone';
 import { AUTH_API_URL } from '@/lib/wagmi';
+import { Check, ChevronDown, CircleAlert, Copy, ExternalLink, Loader2, LockKeyhole, LogOut, RefreshCw, ShieldCheck, UserRound, Wallet, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatUnits } from 'viem';
-import { isPlatformAdmin } from '@/config/detection-zone';
+import { useAccount, useBalance, useConnect, useDisconnect, useSignMessage, useSwitchChain } from 'wagmi';
+import { arbitrumSepolia } from 'wagmi/chains';
+import Counter from './Counter';
 
 type AuthState = 'checking' | 'idle' | 'signing' | 'authenticated' | 'error' | 'offline';
 const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -66,12 +67,12 @@ export function WalletButton() {
   return <div className="account-widget" ref={accountWidgetRef}>
     {!connected ? <button className="wallet-button" onClick={() => setWalletPickerOpen(true)}><Wallet /> Connect wallet</button> :
       <button className={`wallet-account-trigger ${authState === 'authenticated' ? 'verified' : ''}`} aria-haspopup="dialog" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
-        <span className="wallet-identicon">{address.slice(2,4).toUpperCase()}</span><span><b>{shortAddress(address)}</b><small>{balance.data ? `${Number(formatUnits(balance.data.value, balance.data.decimals)).toFixed(3)} ETH` : 'Arbitrum Sepolia'}</small></span><i /><ChevronDown />
+        <span className="wallet-identicon">{address.slice(2,4).toUpperCase()}</span><span><b>{shortAddress(address)}</b><small>{balance.data ? `${Number(formatUnits(balance.data.value, balance.data.decimals)).toFixed(5)} ETH` : 'Arbitrum Sepolia'}</small></span><i /><ChevronDown />
       </button>}
 
     {connected && accountOpen && <section className="wallet-account-panel" role="dialog" aria-label="Wallet account">
       <header><span className="wallet-identicon large">{address.slice(2,4).toUpperCase()}</span><div><b>{shortAddress(address)}</b><span>{connector?.name ?? 'Browser wallet'}</span></div><button onClick={() => setAccountOpen(false)} aria-label="Close account"><X /></button></header>
-      <div className="wallet-balance"><span>Total balance</span><strong>{balance.data ? Number(formatUnits(balance.data.value, balance.data.decimals)).toFixed(4) : '—'} <small>ETH</small></strong><em>Arbitrum Sepolia</em></div>
+      <div className="wallet-balance"><span>Total balance</span><strong>{balance.data ? <Counter value={Number(formatUnits(balance.data.value, balance.data.decimals))} fontSize={28} padding={2} gap={3} textColor="inherit" fontWeight={900} gradientHeight={0} places={[1000, 100, 10, 1, '.', 0.1, 0.01, 0.001, 0.0001, 0.00001]} /> : '—'} <small>ETH</small></strong><em>Arbitrum Sepolia</em></div>
       <div className={`auth-health ${authState}`}>
         {authState === 'authenticated' ? <ShieldCheck /> : authState === 'signing' || authState === 'checking' ? <Loader2 className="animate-spin" /> : <CircleAlert />}
         <div><b>{authState === 'authenticated' ? 'Session verified' : authState === 'offline' ? 'Authentication service offline' : authState === 'signing' ? 'Waiting for signature' : 'Signature required'}</b><span>{authState === 'authenticated' ? 'Proof publishing and betting unlocked.' : authState === 'offline' ? 'Start the full app with npm run dev.' : 'Sign once. No transaction or gas fee.'}</span></div>

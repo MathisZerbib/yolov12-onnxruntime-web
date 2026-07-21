@@ -17,7 +17,7 @@ export interface Room {
 
 export const ROOM_MARKERS: readonly LiveMarker[] = Object.freeze([
   { id: "tokyo",  name: "Tokyo",  locationLabel: "Shibuya",       location: [35.68, 139.65],  href: "/room/tokyo",  streamUrl: "https://wlbt-wowza.streamguys1.com/live/byram.stream/chunks.m3u8" },
-  { id: "sydney", name: "Sydney", locationLabel: "CBD",           location: [-33.87, 151.21], href: "/room/sydney", streamUrl: "https://live.field59.com/klkn/klkn9/chunklist.m3u8" },
+  { id: "sydney", name: "Sydney", locationLabel: "CBD",           location: [-33.87, 151.21], href: "/room/sydney", streamUrl: "https://wlbt-wowza.streamguys1.com/live/byram.stream/chunks.m3u8" },
   { id: "sf",     name: "San Francisco", locationLabel: "Market St", location: [37.78, -122.44], href: "/room/sf",  streamUrl: "https://media-hls-az1.wral.com/livehttporigin/_definst_/mp4:chapel_hill_cam.stream/chunklist.m3u8" },
   { id: "paris", name: "Paris", locationLabel: "Champs-Élysées", location: [48.86, 2.35], href: "/room/paris", streamUrl: "https://s87.ipcamlive.com/streams_storage/57xme5tijy8v39x1b/stream.m3u8" },
   

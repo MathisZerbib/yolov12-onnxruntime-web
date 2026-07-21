@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
-import { parseEther } from 'viem';
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import { arbitrumSepolia } from 'wagmi/chains';
 import { GAME_CONFIG } from '@/config/game-config';
 import { marketContractAddress, marketRoomKey, trafficMarketAbi } from '@/lib/market-contract';
 import type { RoomMarketState } from '@/lib/room-market';
 import { formatRoundUnavailable } from '@/lib/round-availability';
+import { useEffect, useRef, useState } from 'react';
+import { parseEther } from 'viem';
+import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
+import { arbitrumSepolia } from 'wagmi/chains';
 import { TransactionStatus, type TransactionState } from './transaction-status';
 
 interface PlacePositionButtonProps {
@@ -128,10 +128,8 @@ export function PlacePositionButton({ roomId, market, stale, outcome, amount, on
                       ? 'Position opened'
                       : 'Ready to place';
 
-  const label = marketOpen && amountValid ? `Place on round #${market?.marketId}` : 'Hold';
   return <>
-    <button className="place-position" disabled={!isConnected || chainId !== arbitrumSepolia.id || !marketOpen || !amountValid || transactionBusy} onClick={() => void place()}>{label}</button>
-    <p className="position-hold-reason">{holdReason}</p>
+    <button className="place-position" disabled={!isConnected || chainId !== arbitrumSepolia.id || !marketOpen || !amountValid || transactionBusy} onClick={() => void place()}>{holdReason}</button>
     {txState && <TransactionStatus state={txState} hash={hash} />}
     {txState === 'FAILED' && error && <p className="contract-error" role="alert">{error}</p>}
   </>;

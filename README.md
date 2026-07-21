@@ -146,7 +146,7 @@ Each room is a separate SQLite-backed Durable Object. An authenticated operator 
 
 The proof manifest commits to the approved model hash, execution provider, input dimensions, room, time window, final count, and the admin-controlled zone version/configuration hash. The Worker atomically rejects a manifest if that zone changes while the proof is being verified. This makes evidence tampering detectable. It does **not** prove that an untrusted browser showed an authentic camera stream. Production settlement still requires independently captured source-segment hashes, threshold oracle attestations, or a verifiable-compute/TEE system. Never describe a single browser detector as trustless.
 
-Contract results follow `Open → Proposed → Challenged/Finalized → Resolved`. A proposal has a 15-minute bonded challenge period. Payout claims remain unavailable until finalization. The dispute role must be independent from the room operator and oracle.
+Contract results follow `Open → Proposed → Challenged/Finalized → Resolved`. A proposal has a 1-minute bonded challenge period. Payout claims remain unavailable until finalization. The dispute role must be independent from the room operator and oracle.
 
 Inference timing is measured in the worker across preprocessing, ONNX execution, and post-processing. The room HUD displays the actual total latency and selected provider. Validate the desktop, mobile, and WASM targets on a device matrix; model size, quantization, browser, memory, and input dimensions all materially affect the result.
 

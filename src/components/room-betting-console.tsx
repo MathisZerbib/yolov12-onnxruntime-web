@@ -113,7 +113,7 @@ function RoomBettingConsoleComponent({ roomId, market, marketLoading, marketStal
     onRefresh();
     onPositionConfirmed();
   }, [claimEstimate, ethAmount, guaranteedMultiplier, marketExactTarget, marketId, marketLowerBound, marketUpperBound, onPositionConfirmed, onRefresh, profitEstimate, selectedBet.name, selectedPredictionDetail, selectedType]);
-  useEffect(() => {
+    useEffect(() => {
     if (!confirmedBet || !publicClient || betResult?.settled) return;
     let cancelled = false;
     let timer: number | undefined;
@@ -123,6 +123,7 @@ function RoomBettingConsoleComponent({ roomId, market, marketLoading, marketStal
         if (cancelled) return;
         if (result.status === 4) setBetResult({ state: result.winner === confirmedBet.outcome ? 'win' : 'loss', finalCount: result.finalCount, settled: true });
         else if (result.status === 5) setBetResult({ state: 'refund', finalCount: result.finalCount, settled: true });
+        else if (result.status === 2) setBetResult({ state: result.winner === confirmedBet.outcome ? 'win' : 'loss', finalCount: result.finalCount, settled: false });
         else timer = window.setTimeout(() => void checkResult(), 5_000);
       } catch { timer = window.setTimeout(() => void checkResult(), 8_000); }
     };

@@ -9,6 +9,12 @@ export default defineConfig({
   },
   test: {
     environment: 'happy-dom',
+    poolOptions: {
+      forks: {
+        maxForks: process.env.CI ? 2 : 2,
+        minForks: 1,
+      },
+    },
     setupFiles: ['./tests/setup.ts'],
     include: ['tests/unit/**/*.test.{ts,tsx}'],
     restoreMocks: true,
